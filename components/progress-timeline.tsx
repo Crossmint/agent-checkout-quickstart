@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import { Check, Hand } from "lucide-react";
 import type { ProgressItem } from "@/lib/agentic-checkout-types";
 
@@ -21,6 +22,14 @@ export function ProgressTimeline({
   /** When true, the last item is the agent's current action (pulsing). */
   live: boolean;
 }) {
+  // Keep the newest step in view as the agent works, without forcing the whole
+  // page to grow — the list scrolls inside a fixed-height box (so the browser
+  // stays visible alongside it).
+  const endRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [items.length]);
+
   if (items.length === 0) {
     return (
       <p className="text-sm text-[#00150d]/40">
@@ -30,6 +39,7 @@ export function ProgressTimeline({
   }
 
   return (
+    <div className="max-h-[60vh] overflow-y-auto pr-1">
     <ol className="relative space-y-4 before:absolute before:left-[7px] before:top-1 before:bottom-1 before:w-px before:bg-[rgba(0,0,0,0.08)]">
       {items.map((item, i) => {
         const isLast = i === items.length - 1;
@@ -62,5 +72,7 @@ export function ProgressTimeline({
         );
       })}
     </ol>
+      <div ref={endRef} />
+    </div>
   );
 }

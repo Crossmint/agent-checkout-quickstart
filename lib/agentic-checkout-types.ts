@@ -7,6 +7,11 @@ export type JsonSchema = {
   title?: string;
   description?: string;
   enum?: (string | number)[];
+  // A single fixed value — used inside oneOf/anyOf branches to model an option.
+  const?: string | number;
+  // Options can also arrive as a list of branches (often {const, title}).
+  oneOf?: JsonSchema[];
+  anyOf?: JsonSchema[];
   format?: string;
   default?: unknown;
   properties?: Record<string, JsonSchema>;

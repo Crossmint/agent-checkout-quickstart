@@ -26,6 +26,38 @@ function coerce(schema: JsonSchema, raw: string | boolean): unknown {
   return raw;
 }
 
+type Option = { value: string; label: string };
+
+/**
+ * Extracts selectable options from a field schema. The API can express a
+ * closed set of choices in a few ways, so we check all of them — otherwise the
+ * field renders as free text and the agent rejects the answer with a 400:
+ *   - `enum`                       → ["standard", "express"]
+ *   - `oneOf` / `anyOf` of `const` → [{const: "standard", title: "Standard"}]
+ *   - `items.enum` (array field)   → choose from a fixed set
+ * Returns null when the field is genuinely free-form.
+ */
+function optionsFor(schema: JsonSchema): Option[] | null {
+  if (schema.enum?.length) {
+    return schema.enum.map((v) => ({ value: String(v), label: String(v) }));
+  }
+  const branches = schema.oneOf ?? schema.anyOf;
+  if (branches?.length) {
+    const opts = branches
+      .filter((b) => b.const !== undefined || b.enum?.length)
+      .flatMap((b) =>
+        b.const !== undefined
+          ? [{ value: String(b.const), label: b.title ?? String(b.const) }]
+          : (b.enum ?? []).map((v) => ({ value: String(v), label: String(v) })),
+      );
+    if (opts.length) return opts;
+  }
+  if (schema.items?.enum?.length) {
+    return schema.items.enum.map((v) => ({ value: String(v), label: String(v) }));
+  }
+  return null;
+}
+
 /**
  * Renders a form dynamically from a pending action's `responseSchema`. The
  * schema is arbitrary JSON Schema per action — never hardcode fields. Supports
@@ -114,6 +146,7 @@ export function ActionForm({
           const field = properties[key];
           const isRequired = required.has(key);
           const label = titleFor(key, field);
+          const options = optionsFor(field);
 
           return (
             <label key={key} className="block">
@@ -122,7 +155,7 @@ export function ActionForm({
                 {isRequired && <span className="text-[#dc2626]"> *</span>}
               </span>
 
-              {field.enum ? (
+              {options ? (
                 <select
                   required={isRequired}
                   value={String(values[key] ?? "")}
@@ -132,9 +165,9 @@ export function ActionForm({
                   <option value="" disabled>
                     Select…
                   </option>
-                  {field.enum.map((opt) => (
-                    <option key={String(opt)} value={String(opt)}>
-                      {String(opt)}
+                  {options.map((opt) => (
+                    <option key={opt.value} value={opt.value}>
+                      {opt.label}
                     </option>
                   ))}
                 </select>

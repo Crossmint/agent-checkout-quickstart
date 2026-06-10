@@ -63,6 +63,15 @@ function CheckoutApp() {
   // setCheckout returns a fresh object each poll, re-running this effect.
   useEffect(() => {
     if (!checkout || isTerminal(checkout.status)) return;
+    // While the agent is blocked on an *unanswered* action, nothing changes
+    // server-side until the buyer responds — so we stop polling entirely.
+    // Once they've responded (respondedActionId matches), we resume so we can
+    // catch the server moving past awaiting_user_action.
+    const waitingOnUser =
+      checkout.status === "awaiting_user_action" &&
+      !!checkout.pendingUserAction &&
+      respondedActionId !== checkout.pendingUserAction.id;
+    if (waitingOnUser) return;
     let cancelled = false;
     const t = setTimeout(async () => {
       try {
@@ -84,7 +93,7 @@ function CheckoutApp() {
       cancelled = true;
       clearTimeout(t);
     };
-  }, [checkout, logCall, getJwt]);
+  }, [checkout, respondedActionId, logCall, getJwt]);
 
   const handleCreate = useCallback(async (input: CreateCheckoutInput) => {
     setCreating(true);
@@ -179,7 +188,11 @@ function CheckoutApp() {
   // The pending action drives a modal centered over the video.
   const pending = checkout?.pendingUserAction;
   const awaiting = status === "awaiting_user_action";
-  const showActionForm = awaiting && pending && respondedActionId !== pending.id;
+  // Only block the browser when there's a real, *unanswered* action. Once the
+  // user has responded (or the agent is still acting without a concrete ask),
+  // we keep the browser visible and show a small non-blocking indicator.
+  const showActionForm = Boolean(awaiting && pending && respondedActionId !== pending.id);
+  const showProcessing = Boolean(awaiting && pending && respondedActionId === pending.id);
 
   return (
     <div className="relative flex min-h-dvh flex-col bg-[#F7F5F4]">
@@ -284,23 +297,28 @@ function CheckoutApp() {
               <div className="relative">
                 <BrowserFrame embedUrl={resolveEmbedUrl(checkout.browser?.embedUrl)} />
 
-                {awaiting && (
+                {/* Full backdrop ONLY when the agent is genuinely blocked on the
+                    buyer. Otherwise the browser stays visible so you can watch
+                    the agent keep working. */}
+                {showActionForm && (
                   <div className="animate-fade-in absolute inset-0 z-20 flex items-center justify-center rounded-[10px] bg-black/40 p-4 backdrop-blur-[2px]">
                     <div className="animate-fade-in-scale w-full max-w-[440px]">
-                      {showActionForm ? (
-                        <ActionForm
-                          action={pending}
-                          onSubmit={handleSubmitAction}
-                          onDecline={handleDeclineAction}
-                          submitting={actionBusy}
-                        />
-                      ) : (
-                        <div className="flex items-center gap-2 rounded-[10px] bg-white px-4 py-3 text-sm text-[#00150d]/60 shadow-lg">
-                          <Loader2 className="size-4 animate-spin text-[#05B959]" />
-                          Processing your response…
-                        </div>
-                      )}
+                      <ActionForm
+                        action={pending!}
+                        onSubmit={handleSubmitAction}
+                        onDecline={handleDeclineAction}
+                        submitting={actionBusy}
+                      />
                     </div>
+                  </div>
+                )}
+
+                {/* Non-blocking toast while we wait for the server to move on
+                    after the buyer responded. */}
+                {showProcessing && (
+                  <div className="animate-fade-in absolute bottom-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-2 rounded-full bg-white/95 px-3.5 py-2 text-xs text-[#00150d]/60 shadow-lg">
+                    <Loader2 className="size-3.5 animate-spin text-[#05B959]" />
+                    Processing your response…
                   </div>
                 )}
               </div>

@@ -1,12 +1,42 @@
 "use client";
 
-import { CheckCircle2, XCircle, Ban, ExternalLink } from "lucide-react";
+import { CheckCircle2, XCircle, Ban, ExternalLink, Clock } from "lucide-react";
 import type { CheckoutView, Money } from "@/lib/agentic-checkout-types";
 
 function formatMoney(total?: Money | string): string | null {
   if (!total) return null;
   if (typeof total === "string") return total;
   return `${total.amount} ${total.currency?.toUpperCase() ?? ""}`.trim();
+}
+
+/** Human-readable elapsed time between checkout creation and its terminal moment. */
+function formatDuration(fromIso?: string, toIso?: string): string | null {
+  if (!fromIso || !toIso) return null;
+  const ms = new Date(toIso).getTime() - new Date(fromIso).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return null;
+  const totalSec = Math.round(ms / 1000);
+  if (totalSec < 60) return `${totalSec}s`;
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return s ? `${m}m ${s}s` : `${m}m`;
+}
+
+/** When the checkout reached its terminal state, by status. */
+function endTimestamp(checkout: CheckoutView): string | undefined {
+  return (
+    checkout.receipt?.capturedAt ?? checkout.failure?.failedAt ?? checkout.updatedAt
+  );
+}
+
+function ElapsedRow({ checkout, label }: { checkout: CheckoutView; label: string }) {
+  const elapsed = formatDuration(checkout.createdAt, endTimestamp(checkout));
+  if (!elapsed) return null;
+  return (
+    <div className="mt-3 flex items-center gap-1.5 text-xs text-[#00150d]/45">
+      <Clock className="size-3.5" />
+      {label} {elapsed}
+    </div>
+  );
 }
 
 const FAILURE_COPY: Record<string, string> = {
@@ -48,6 +78,7 @@ export function OutcomeCard({ checkout }: { checkout: CheckoutView }) {
             View confirmation <ExternalLink className="size-3.5" />
           </a>
         )}
+        <ElapsedRow checkout={checkout} label="Completed in" />
       </div>
     );
   }
@@ -70,6 +101,7 @@ export function OutcomeCard({ checkout }: { checkout: CheckoutView }) {
             {failure.reason}
           </span>
         )}
+        <ElapsedRow checkout={checkout} label="Stopped after" />
       </div>
     );
   }
@@ -83,6 +115,7 @@ export function OutcomeCard({ checkout }: { checkout: CheckoutView }) {
           Checkout cancelled
         </h3>
       </div>
+      <ElapsedRow checkout={checkout} label="Stopped after" />
     </div>
   );
 }
