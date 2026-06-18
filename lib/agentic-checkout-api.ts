@@ -15,13 +15,18 @@
 
 import {
   buildCreateCheckoutBody,
+  buildCreatePackBody,
   type ActionAck,
   type CheckoutView,
   type CreateCheckoutInput,
+  type CreatePackInput,
+  type PackManifest,
+  type UpdatePackInput,
 } from "@/lib/agentic-checkout-types";
 
 const BASE_URL = (process.env.NEXT_PUBLIC_CROSSMINT_BASE_URL ?? "http://localhost:3000").replace(/\/$/, "");
 const API_BASE = `${BASE_URL}/api/unstable/agentic-checkouts`;
+const PACKS_BASE = `${API_BASE}/packs`;
 const API_KEY = process.env.NEXT_PUBLIC_CROSSMINT_API_KEY ?? "";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -163,4 +168,82 @@ export async function cancelCheckout(jwt: string, id: string): Promise<void> {
   });
   if (!res.ok) throw new Error(`Failed to cancel checkout (${res.status}): ${await readError(res)}`);
   log("DELETE /agentic-checkouts/:id → accepted", { id, status: res.status });
+}
+
+// ─── Packs ────────────────────────────────────────────────────────────────--
+//
+// A pack bundles agentic instructions for ONE merchant. Create it once, then
+// attach it to any number of checkouts by passing its id as `packId`.
+//
+//   createPack   POST   /packs        → 201  { id, schemaVersion, ... }
+//   getPack      GET    /packs/:id    → 200
+//   updatePack   PATCH  /packs/:id    → 200  (phases replace the whole record)
+//   deletePack   DELETE /packs/:id    → 204
+//
+// There is NO list endpoint: the API can't enumerate a project's packs. This
+// app remembers the ids it created (see lib/pack-store.ts) and re-fetches each
+// with getPack. The pack scopes (agentic-checkouts.packs.create | read |
+// update | delete) are separate from the checkout scopes — the ck_ key needs
+// both for this quickstart to work end to end.
+
+/** Thrown by getPack when a pack no longer exists (404) so callers can prune it. */
+export class PackNotFoundError extends Error {
+  constructor(public readonly id: string) {
+    super(`Pack ${id} not found`);
+    this.name = "PackNotFoundError";
+  }
+}
+
+/** Create a pack. Returns the full manifest — save `id` to attach it to checkouts. */
+export async function createPack(jwt: string, input: CreatePackInput): Promise<PackManifest> {
+  const body = buildCreatePackBody(input);
+  log("POST /agentic-checkouts/packs → request body", body);
+  const res = await fetch(PACKS_BASE, {
+    method: "POST",
+    headers: authHeaders(jwt),
+    body: JSON.stringify(body),
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`Failed to create pack (${res.status}): ${await readError(res)}`);
+  const data: PackManifest = await res.json();
+  log("POST /agentic-checkouts/packs → response", data);
+  return data;
+}
+
+/** Fetch a single pack manifest. Throws PackNotFoundError on a 404. */
+export async function getPack(jwt: string, id: string): Promise<PackManifest> {
+  const res = await fetch(`${PACKS_BASE}/${id}`, {
+    headers: authHeaders(jwt),
+    cache: "no-store",
+  });
+  if (res.status === 404) throw new PackNotFoundError(id);
+  if (!res.ok) throw new Error(`Failed to fetch pack (${res.status}): ${await readError(res)}`);
+  return (await res.json()) as PackManifest;
+}
+
+/** Update a pack. Any provided `phases` replace the stored record wholesale. */
+export async function updatePack(jwt: string, id: string, input: UpdatePackInput): Promise<PackManifest> {
+  log(`PATCH /agentic-checkouts/packs/${id} → request body`, input);
+  const res = await fetch(`${PACKS_BASE}/${id}`, {
+    method: "PATCH",
+    headers: authHeaders(jwt),
+    body: JSON.stringify(input),
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`Failed to update pack (${res.status}): ${await readError(res)}`);
+  const data: PackManifest = await res.json();
+  log(`PATCH /agentic-checkouts/packs/${id} → response`, data);
+  return data;
+}
+
+/** Delete a pack. Returns 204 — already-running checkouts keep their provenance. */
+export async function deletePack(jwt: string, id: string): Promise<void> {
+  log("DELETE /agentic-checkouts/packs/:id → request", { id });
+  const res = await fetch(`${PACKS_BASE}/${id}`, {
+    method: "DELETE",
+    headers: authHeaders(jwt),
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`Failed to delete pack (${res.status}): ${await readError(res)}`);
+  log("DELETE /agentic-checkouts/packs/:id → accepted", { id, status: res.status });
 }

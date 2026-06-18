@@ -53,6 +53,73 @@ export type ProgressItem = {
 
 export type Money = { amount: string; currency: string };
 
+// ─── Packs ──────────────────────────────────────────────────────────────────
+// A pack is a project-scoped bundle of agentic instructions for ONE merchant.
+// It carries the merchant's identity (display name + domains) and a record of
+// "phases" — each phase says when it applies (`applicability`) and what the
+// agent should do (`instructions`). Attach a pack to a checkout via `packId`
+// and the agent follows the pack's phases through that merchant's flow.
+
+/** A single phase of a pack — keyed by a snake_case id in the `phases` record. */
+export type PackPhase = {
+  // When this phase applies, in natural language (≤4000 chars).
+  applicability: string;
+  // What the agent should do while in this phase (≤20000 chars).
+  instructions: string;
+  // Optional human label for the phase (≤200 chars).
+  description?: string;
+};
+
+/** phases: snake_case id → phase body. At least one, at most 50 per pack. */
+export type PackPhases = Record<string, PackPhase>;
+
+/** The merchant a pack guides checkout for. */
+export type PackMerchant = {
+  // Optional kebab-case handle. Derived from the primary domain when omitted.
+  slug?: string;
+  displayName: string;
+  // Canonical lowercase hostnames (no protocol/path), e.g. ["nike.com"].
+  domains: string[];
+};
+
+/** The read model returned by every pack endpoint (create / get / update). */
+export type PackManifest = {
+  schemaVersion: number;
+  id: string;
+  description?: string;
+  merchant: PackMerchant;
+  phases: PackPhases;
+  // How many checkouts have run against this pack.
+  timesUsed: number;
+  createdAt: string;
+  updatedAt: string;
+};
+
+/** Body for POST /agentic-checkouts/packs. */
+export type CreatePackInput = {
+  description?: string;
+  merchant: PackMerchant;
+  phases: PackPhases;
+};
+
+/** Body for PATCH /agentic-checkouts/packs/:id. Phases replace the whole record. */
+export type UpdatePackInput = {
+  // `null` clears the stored description.
+  description?: string | null;
+  merchant?: PackMerchant;
+  phases?: PackPhases;
+};
+
+/**
+ * Pack provenance attached to a checkout view once a pack has driven the run.
+ * Captured on the run's event stream, so it survives a later pack edit/delete.
+ */
+export type IntentPackUsage = {
+  packId: string;
+  merchantDisplayName: string;
+  phasesUsed: string[];
+};
+
 export type Receipt = {
   total?: Money | string;
   capturedAt?: string;
@@ -88,6 +155,8 @@ export type CheckoutView = {
     maxCost: Money;
   };
   metadata?: Record<string, unknown>;
+  // Present once a pack drove (or is driving) this checkout.
+  pack?: IntentPackUsage;
   progressItems: ProgressItem[];
   pendingUserAction?: PendingUserAction;
   browser?: {
@@ -115,6 +184,8 @@ export type CreateCheckoutInput = {
   maxCostAmount?: string;
   maxCostCurrency?: string;
   orderRef?: string;
+  // Optional pack to guide the agent through this merchant's flow.
+  packId?: string;
 };
 
 /**
@@ -128,6 +199,8 @@ export function buildCreateCheckoutBody(input: CreateCheckoutInput) {
       url: input.targetUrl,
       ...(input.request ? { request: input.request } : {}),
     },
+    // Optional: a checkout targets one merchant, so at most one pack covers it.
+    ...(input.packId ? { packId: input.packId } : {}),
     // constraints.maxCost is required by the API. Collected from the form's
     // "Max cost" + "Currency" fields; the defaults are a fallback only.
     constraints: {
@@ -140,9 +213,25 @@ export function buildCreateCheckoutBody(input: CreateCheckoutInput) {
   };
 }
 
+/**
+ * Builds the POST /packs request body, dropping empty optionals so the logged
+ * request matches the real wire shape. Phases arrive already keyed by id.
+ */
+export function buildCreatePackBody(input: CreatePackInput) {
+  return {
+    ...(input.description ? { description: input.description } : {}),
+    merchant: {
+      ...(input.merchant.slug ? { slug: input.merchant.slug } : {}),
+      displayName: input.merchant.displayName,
+      domains: input.merchant.domains,
+    },
+    phases: input.phases,
+  };
+}
+
 /** One entry in the client-side API-call log rendered by the "Code" view. */
 export type ApiCall = {
-  method: "POST" | "GET" | "DELETE";
+  method: "POST" | "GET" | "PATCH" | "DELETE";
   path: string;
   requestBody?: unknown;
   response?: unknown;

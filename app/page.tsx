@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Loader2, RotateCcw, X } from "lucide-react";
+import { Loader2, RotateCcw, X, Store, ShoppingBag } from "lucide-react";
 import { useStytch, useStytchUser } from "@stytch/nextjs";
 import {
   createCheckout,
@@ -10,7 +10,10 @@ import {
   declineAction,
   cancelCheckout,
   resolveEmbedUrl,
+  getPack,
+  PackNotFoundError,
 } from "@/lib/agentic-checkout-api";
+import { getStoredPackIds, addStoredPackId, removeStoredPackId } from "@/lib/pack-store";
 import { LoginScreen } from "@/components/login-screen";
 import {
   buildCreateCheckoutBody,
@@ -18,6 +21,7 @@ import {
   type ApiCall,
   type CheckoutView,
   type CreateCheckoutInput,
+  type PackManifest,
 } from "@/lib/agentic-checkout-types";
 import { CheckoutForm } from "@/components/checkout-form";
 import { StatusBadge } from "@/components/status-badge";
@@ -28,9 +32,12 @@ import { OutcomeCard } from "@/components/outcome-card";
 import { Footer } from "@/components/footer";
 import { ViewSwitch, type ViewMode } from "@/components/view-switch";
 import { ApiLogView } from "@/components/api-log-view";
+import { PacksView } from "@/components/packs-view";
 
 const POLL_INTERVAL_MS = 1500;
 const BASE_PATH = "/api/unstable/agentic-checkouts";
+
+type Tab = "checkout" | "packs";
 
 function CheckoutApp() {
   const stytch = useStytch();
@@ -41,6 +48,48 @@ function CheckoutApp() {
 
   const userEmail = user?.emails?.[0]?.email ?? "";
   const userInitial = userEmail[0]?.toUpperCase() ?? "U";
+
+  const [tab, setTab] = useState<Tab>("checkout");
+
+  // Packs the agent can be guided by. There's no list endpoint, so we re-fetch
+  // the ids this browser created (see lib/pack-store.ts) and prune any the API
+  // reports gone. Shared between the Packs tab and the checkout form's selector.
+  const [packs, setPacks] = useState<PackManifest[]>([]);
+  const [packsLoading, setPacksLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const ids = getStoredPackIds();
+      const loaded = await Promise.all(
+        ids.map(async (id) => {
+          try {
+            return await getPack(getJwt(), id);
+          } catch (err) {
+            // A 404 means the pack was deleted elsewhere — forget it.
+            if (err instanceof PackNotFoundError) removeStoredPackId(id);
+            return null;
+          }
+        }),
+      );
+      if (cancelled) return;
+      setPacks(loaded.filter((p): p is PackManifest => p !== null));
+      setPacksLoading(false);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [getJwt]);
+
+  const handlePackCreated = useCallback((pack: PackManifest) => {
+    addStoredPackId(pack.id);
+    setPacks((prev) => [pack, ...prev.filter((p) => p.id !== pack.id)]);
+  }, []);
+
+  const handlePackDeleted = useCallback((id: string) => {
+    removeStoredPackId(id);
+    setPacks((prev) => prev.filter((p) => p.id !== id));
+  }, []);
 
   const [checkout, setCheckout] = useState<CheckoutView | null>(null);
   const [creating, setCreating] = useState(false);
@@ -213,7 +262,7 @@ function CheckoutApp() {
 
       <div className="mx-auto w-full max-w-[1200px] flex-1 px-6 pb-12 pt-[72px]">
         {/* Header */}
-        <header className="mb-10 flex items-end justify-between">
+        <header className="mb-6 flex items-end justify-between">
           <div>
             <h1 className="font-[family-name:var(--font-heading)] text-[28px] font-medium leading-none tracking-[-0.84px] text-[#00150d]">
               Agentic Checkouts
@@ -223,7 +272,7 @@ function CheckoutApp() {
               the checkout, pauses for anything only you can answer, and reports back.
             </p>
           </div>
-          {checkout && (
+          {tab === "checkout" && checkout && (
             <div className="flex shrink-0 items-center gap-4">
               <ViewSwitch view={viewMode} onChange={setViewMode} />
               <button
@@ -236,7 +285,32 @@ function CheckoutApp() {
           )}
         </header>
 
-        {!checkout ? (
+        {/* Tab nav: Checkout ↔ Packs */}
+        <nav className="mb-9 flex items-center gap-1 border-b border-[rgba(0,0,0,0.08)]">
+          <TabButton active={tab === "checkout"} onClick={() => setTab("checkout")}>
+            <ShoppingBag className="size-3.5" />
+            Checkout
+          </TabButton>
+          <TabButton active={tab === "packs"} onClick={() => setTab("packs")}>
+            <Store className="size-3.5" />
+            Merchants
+            {packs.length > 0 && (
+              <span className="rounded-full bg-black/[0.06] px-1.5 text-[11px] text-[#00150d]/50">
+                {packs.length}
+              </span>
+            )}
+          </TabButton>
+        </nav>
+
+        {tab === "packs" ? (
+          <PacksView
+            getJwt={getJwt}
+            packs={packs}
+            loading={packsLoading}
+            onCreated={handlePackCreated}
+            onDeleted={handlePackDeleted}
+          />
+        ) : !checkout ? (
           /* ── Create form ──────────────────────────────────────────────── */
           <div key="form" className="animate-fade-in mx-auto max-w-[520px]">
             <div className="rounded-[12px] bg-white p-6">
@@ -246,7 +320,7 @@ function CheckoutApp() {
               <p className="mb-5 text-sm text-[#00150d]/55">
                 The agent will try to buy this item for you.
               </p>
-              <CheckoutForm onSubmit={handleCreate} submitting={creating} error={error} />
+              <CheckoutForm onSubmit={handleCreate} submitting={creating} error={error} packs={packs} />
             </div>
           </div>
         ) : viewMode === "code" ? (
@@ -330,6 +404,28 @@ function CheckoutApp() {
                 </div>
               )}
 
+              {/* Pack provenance: which pack (and phases) guided this run. */}
+              {checkout.pack && (
+                <div className="flex flex-wrap items-center gap-2 rounded-[8px] bg-white px-4 py-3 text-sm">
+                  <Store className="size-4 shrink-0 text-[#05B959]" />
+                  <span className="text-[#00150d]">
+                    Guided by <span className="font-medium">{checkout.pack.merchantDisplayName}</span>
+                  </span>
+                  {checkout.pack.phasesUsed.length > 0 && (
+                    <span className="flex flex-wrap gap-1">
+                      {checkout.pack.phasesUsed.map((id) => (
+                        <span
+                          key={id}
+                          className="rounded-full bg-black/[0.04] px-2 py-0.5 font-mono text-[11px] text-[#00150d]/60"
+                        >
+                          {id}
+                        </span>
+                      ))}
+                    </span>
+                  )}
+                </div>
+              )}
+
               {terminal && <OutcomeCard checkout={checkout} />}
             </main>
           </div>
@@ -338,6 +434,29 @@ function CheckoutApp() {
 
       <Footer />
     </div>
+  );
+}
+
+function TabButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      className={`-mb-px flex items-center gap-1.5 border-b-2 px-3 pb-2.5 text-sm font-medium transition-colors ${
+        active
+          ? "border-[#05B959] text-[#00150d]"
+          : "border-transparent text-[#00150d]/45 hover:text-[#00150d]/70"
+      }`}
+    >
+      {children}
+    </button>
   );
 }
 

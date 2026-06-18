@@ -22,6 +22,7 @@ Hand an agent a product URL and a budget and let it check out for you. This quic
 - Embed the live browser session the agent is driving
 - Render a form dynamically from each pending action's JSON Schema — never hardcoding fields
 - Submit or decline user actions, and read the final receipt or failure reason
+- Create reusable **packs** of per-merchant instructions and attach one to a checkout with `packId`
 
 ## How it works
 
@@ -35,6 +36,25 @@ The app calls four endpoints under `${NEXT_PUBLIC_CROSSMINT_BASE_URL}/api/unstab
 | 4. Cancel | `DELETE /:id` | `202` — async; flips to `cancelled` on a later poll. |
 
 Terminal states carry a `receipt` (`succeeded`) or a `failure` with a `reason` of `max_cost_exceeded | user_cancelled | user_action_expired | automation_failed` (`failed`).
+
+## Packs
+
+A **pack** is a project-scoped bundle of agentic instructions for a **single merchant**: its identity (`displayName` + `domains`) plus a record of `phases`, where each phase says when it applies (`applicability`) and what the agent should do (`instructions`). Create a pack once, then attach it to any number of checkouts so the agent follows your merchant-specific playbook instead of figuring the flow out cold.
+
+Pack endpoints live under `…/agentic-checkouts/packs` (`lib/agentic-checkout-api.ts`):
+
+| Call | Result |
+| --- | --- |
+| `POST /packs` | `201` — the full pack manifest. Save `id`. |
+| `GET /packs/:id` | `200` — re-fetch a pack. |
+| `PATCH /packs/:id` | `200` — update metadata/merchant/phases (phases **replace** the whole record). |
+| `DELETE /packs/:id` | `204` — already-running checkouts keep their pack provenance. |
+
+**How packs touch the checkout flow:**
+- `POST /agentic-checkouts` accepts an optional `packId`. Pass it and the agent is guided by that pack's phases.
+- The checkout view then carries an immutable `pack: { packId, merchantDisplayName, phasesUsed }` — recorded on the run's event stream, so it survives a later pack edit or delete.
+
+**There is no `GET /packs` (list) endpoint.** You can create/get/update/delete by id, but the API can't enumerate a project's packs. This demo remembers the ids it created in `localStorage` (`lib/pack-store.ts`) and re-fetches each on load; a real app would store pack ids in its own database next to the merchant records they belong to. The **Packs** tab in the app creates, lists (from that local memory), and deletes packs, and the checkout form gains a **Use a pack** selector.
 
 **Auth:** every call runs in the browser and sends two things — your **client-side** Crossmint key (`X-API-KEY: ck_...`) and the signed-in user's **Stytch session JWT** (`Authorization: Bearer ...`). The `ck_` key alone returns `401`; checkouts are always made on behalf of an authenticated user.
 
@@ -61,6 +81,7 @@ Then fill in `.env.local` (all values are `NEXT_PUBLIC_*` — they ship to the b
 NEXT_PUBLIC_STYTCH_PUBLIC_TOKEN=public-token-live-...
 
 # Crossmint CLIENT production key with scopes: agentic-checkouts.create | read | update | cancel.
+# For the Packs tab, also add: agentic-checkouts.packs.create | read | update | delete.
 # Public by design — restrict it with allowed-origins in the Crossmint console.
 NEXT_PUBLIC_CROSSMINT_API_KEY=ck_production_...
 
@@ -90,3 +111,5 @@ Open [http://localhost:3000](http://localhost:3000) (or whichever port Next pick
 - **Poll, don't push.** v1 has no webhooks; a ~1.5s poll on `GET /:id` driving a state machine is the intended pattern (`app/page.tsx`).
 - **Forms are schema-driven.** `pendingUserAction.responseSchema` is arbitrary JSON Schema per action — `components/action-form.tsx` renders it dynamically.
 - **Payment data is plaintext in v1.** When a payment action appears, card fields currently travel in `values` with no secret/payment semantics on the wire. Don't build a real funding story on this until the API adds payment semantics.
+- **Packs have no list endpoint.** The app tracks pack ids in `localStorage`, so the Packs tab only shows packs created in *this* browser. Clear site data and the list empties even though the packs still exist server-side — store ids in your own backend for anything real.
+- **Pack scopes are separate.** Creating/listing packs needs the `agentic-checkouts.packs.*` scopes on your `ck_` key, in addition to the checkout scopes. Without them the Packs tab calls return `403`.

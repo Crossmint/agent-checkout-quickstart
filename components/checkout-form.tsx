@@ -2,26 +2,29 @@
 
 import { useState } from "react";
 import { Loader2, ShoppingBag } from "lucide-react";
-import type { CreateCheckoutInput } from "@/lib/agentic-checkout-types";
+import type { CreateCheckoutInput, PackManifest } from "@/lib/agentic-checkout-types";
 
 export function CheckoutForm({
   onSubmit,
   submitting,
   error,
+  packs = [],
 }: {
   onSubmit: (input: CreateCheckoutInput) => void;
   submitting: boolean;
   error?: string | null;
+  packs?: PackManifest[];
 }) {
   const [targetUrl, setTargetUrl] = useState("");
   const [request, setRequest] = useState("buy size M");
   const [maxCostAmount, setMaxCostAmount] = useState("20.00");
   const [maxCostCurrency, setMaxCostCurrency] = useState("USD");
   const [orderRef, setOrderRef] = useState("demo-1");
+  const [packId, setPackId] = useState("");
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    onSubmit({ targetUrl, request, maxCostAmount, maxCostCurrency, orderRef });
+    onSubmit({ targetUrl, request, maxCostAmount, maxCostCurrency, orderRef, packId: packId || undefined });
   };
 
   return (
@@ -82,6 +85,23 @@ export function CheckoutForm({
           className={inputClass}
         />
       </Field>
+
+      {packs.length > 0 && (
+        <Field label="Merchant" hint="Optional. Guides the agent with that merchant's saved phases (sent as packId).">
+          <select
+            value={packId}
+            onChange={(e) => setPackId(e.target.value)}
+            className={`${inputClass} cursor-pointer`}
+          >
+            <option value="">No merchant pack</option>
+            {packs.map((pack) => (
+              <option key={pack.id} value={pack.id}>
+                {pack.merchant.displayName} — {pack.merchant.domains[0]}
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
 
       {error && (
         <div className="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-600">{error}</div>
