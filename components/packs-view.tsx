@@ -1,9 +1,14 @@
 "use client";
 
 import { useCallback, useState } from "react";
-import { Loader2, Plus, Trash2, Store } from "lucide-react";
-import { createPack, deletePack } from "@/lib/agentic-checkout-api";
-import type { ApiCall, CreatePackInput, PackManifest } from "@/lib/agentic-checkout-types";
+import { Loader2, Pencil, Plus, Trash2, Store } from "lucide-react";
+import { createPack, deletePack, updatePack } from "@/lib/agentic-checkout-api";
+import type {
+  ApiCall,
+  CreatePackInput,
+  PackManifest,
+  UpdatePackInput,
+} from "@/lib/agentic-checkout-types";
 import { buildCreatePackBody } from "@/lib/agentic-checkout-types";
 import { PackForm } from "@/components/pack-form";
 import { ViewSwitch, type ViewMode } from "@/components/view-switch";
@@ -22,16 +27,20 @@ export function PacksView({
   packs,
   loading,
   onCreated,
+  onUpdated,
   onDeleted,
 }: {
   getJwt: () => string;
   packs: PackManifest[];
   loading: boolean;
   onCreated: (pack: PackManifest) => void;
+  onUpdated: (pack: PackManifest) => void;
   onDeleted: (id: string) => void;
 }) {
   const [viewMode, setViewMode] = useState<ViewMode>("ui");
   const [showForm, setShowForm] = useState(false);
+  // The pack being edited, or null when the form (if shown) is creating a new one.
+  const [editing, setEditing] = useState<PackManifest | null>(null);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -39,6 +48,11 @@ export function PacksView({
   const [apiLog, setApiLog] = useState<ApiCall[]>([]);
   const logCall = useCallback((call: Omit<ApiCall, "at">) => {
     setApiLog((prev) => [...prev, { ...call, at: new Date().toLocaleTimeString() }]);
+  }, []);
+
+  const closeForm = useCallback(() => {
+    setShowForm(false);
+    setEditing(null);
   }, []);
 
   const handleCreate = useCallback(
@@ -49,14 +63,40 @@ export function PacksView({
         const pack = await createPack(getJwt(), input);
         logCall({ method: "POST", path: PACKS_PATH, requestBody: buildCreatePackBody(input), response: pack });
         onCreated(pack);
-        setShowForm(false);
+        closeForm();
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to create pack");
       } finally {
         setCreating(false);
       }
     },
-    [getJwt, logCall, onCreated],
+    [getJwt, logCall, onCreated, closeForm],
+  );
+
+  const handleUpdate = useCallback(
+    async (id: string, original: PackManifest, input: CreatePackInput) => {
+      setCreating(true);
+      setError(null);
+      // The form yields a full CreatePackInput; PATCH takes the same fields but
+      // each is optional. Phases replace the stored record wholesale. Clearing a
+      // description that was set needs an explicit null — an absent field is a no-op.
+      const body: UpdatePackInput = {
+        description: input.description ?? (original.description ? null : undefined),
+        merchant: input.merchant,
+        phases: input.phases,
+      };
+      try {
+        const pack = await updatePack(getJwt(), id, body);
+        logCall({ method: "PATCH", path: `${PACKS_PATH}/${id}`, requestBody: body, response: pack });
+        onUpdated(pack);
+        closeForm();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to update pack");
+      } finally {
+        setCreating(false);
+      }
+    },
+    [getJwt, logCall, onUpdated, closeForm],
   );
 
   const handleDelete = useCallback(
@@ -96,11 +136,16 @@ export function PacksView({
       ) : showForm ? (
         <div className="rounded-[12px] bg-white p-6">
           <h3 className="mb-4 font-[family-name:var(--font-heading)] text-[16px] font-medium text-[#00150d]">
-            New merchant
+            {editing ? "Edit merchant" : "New merchant"}
           </h3>
           <PackForm
-            onSubmit={handleCreate}
-            onCancel={() => setShowForm(false)}
+            // Remount when switching target so the form re-seeds its fields.
+            key={editing?.id ?? "new"}
+            initialPack={editing ?? undefined}
+            onSubmit={
+              editing ? (input) => handleUpdate(editing.id, editing, input) : handleCreate
+            }
+            onCancel={closeForm}
             submitting={creating}
             error={error}
           />
@@ -110,6 +155,7 @@ export function PacksView({
           <button
             onClick={() => {
               setError(null);
+              setEditing(null);
               setShowForm(true);
             }}
             className="flex w-full items-center justify-center gap-2 rounded-[10px] border border-dashed border-[rgba(0,0,0,0.18)] bg-white/40 py-3 text-sm font-medium text-[#00150d]/70 transition-colors hover:border-[#05B959]/50 hover:text-[#00150d]"
@@ -140,6 +186,11 @@ export function PacksView({
                 key={pack.id}
                 pack={pack}
                 deleting={deletingId === pack.id}
+                onEdit={() => {
+                  setError(null);
+                  setEditing(pack);
+                  setShowForm(true);
+                }}
                 onDelete={() => handleDelete(pack.id)}
               />
             ))
@@ -153,10 +204,12 @@ export function PacksView({
 function MerchantCard({
   pack,
   deleting,
+  onEdit,
   onDelete,
 }: {
   pack: PackManifest;
   deleting: boolean;
+  onEdit: () => void;
   onDelete: () => void;
 }) {
   const phaseIds = Object.keys(pack.phases);
@@ -170,14 +223,24 @@ function MerchantCard({
             <h3 className="truncate font-[family-name:var(--font-heading)] text-[15px] font-medium text-[#00150d]">
               {pack.merchant.displayName}
             </h3>
-            <button
-              onClick={onDelete}
-              disabled={deleting}
-              className="flex shrink-0 items-center text-[#00150d]/35 transition-colors hover:text-red-500 disabled:opacity-50"
-              title="Delete merchant"
-            >
-              {deleting ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
-            </button>
+            <div className="flex shrink-0 items-center gap-2">
+              <button
+                onClick={onEdit}
+                disabled={deleting}
+                className="flex items-center text-[#00150d]/35 transition-colors hover:text-[#05B959] disabled:opacity-50"
+                title="Edit merchant"
+              >
+                <Pencil className="size-3.5" />
+              </button>
+              <button
+                onClick={onDelete}
+                disabled={deleting}
+                className="flex items-center text-[#00150d]/35 transition-colors hover:text-red-500 disabled:opacity-50"
+                title="Delete merchant"
+              >
+                {deleting ? <Loader2 className="size-3.5 animate-spin" /> : <Trash2 className="size-3.5" />}
+              </button>
+            </div>
           </div>
           <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-[#00150d]/45">
             <span className="truncate">{pack.merchant.domains.join(", ")}</span>

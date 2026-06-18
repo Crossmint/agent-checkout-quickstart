@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Loader2, Plus, Trash2, Store } from "lucide-react";
-import type { CreatePackInput, PackPhases } from "@/lib/agentic-checkout-types";
+import type { CreatePackInput, PackManifest, PackPhases } from "@/lib/agentic-checkout-types";
 
 // One editable phase row. `id` becomes the key in the `phases` record, so it
 // must be unique, non-empty, and snake_case (the API enforces the last part).
@@ -29,22 +29,40 @@ const STARTER_PHASES: PhaseDraft[] = [
   },
 ];
 
+// Unfold a pack's keyed `phases` record back into editable rows so the form can
+// pre-fill them when editing an existing merchant.
+function phaseDraftsFrom(phases: PackPhases): PhaseDraft[] {
+  return Object.entries(phases).map(([id, phase]) => ({
+    id,
+    applicability: phase.applicability,
+    instructions: phase.instructions,
+    description: phase.description ?? "",
+  }));
+}
+
 export function PackForm({
+  initialPack,
   onSubmit,
   onCancel,
   submitting,
   error,
 }: {
+  // When set, the form edits this pack: fields pre-fill and the submit label
+  // switches to "Save changes". When omitted, it creates a new merchant.
+  initialPack?: PackManifest;
   onSubmit: (input: CreatePackInput) => void;
   onCancel: () => void;
   submitting: boolean;
   error?: string | null;
 }) {
-  const [displayName, setDisplayName] = useState("Acme Store");
-  const [domains, setDomains] = useState("acme.com");
-  const [slug, setSlug] = useState("");
-  const [description, setDescription] = useState("");
-  const [phases, setPhases] = useState<PhaseDraft[]>(STARTER_PHASES);
+  const editing = initialPack !== undefined;
+  const [displayName, setDisplayName] = useState(initialPack?.merchant.displayName ?? "Acme Store");
+  const [domains, setDomains] = useState(initialPack?.merchant.domains.join(", ") ?? "acme.com");
+  const [slug, setSlug] = useState(initialPack?.merchant.slug ?? "");
+  const [description, setDescription] = useState(initialPack?.description ?? "");
+  const [phases, setPhases] = useState<PhaseDraft[]>(
+    initialPack ? phaseDraftsFrom(initialPack.phases) : STARTER_PHASES,
+  );
   const [localError, setLocalError] = useState<string | null>(null);
 
   const updatePhase = (i: number, patch: Partial<PhaseDraft>) =>
@@ -225,7 +243,7 @@ export function PackForm({
             </>
           ) : (
             <>
-              <Store className="size-4" /> Save merchant
+              <Store className="size-4" /> {editing ? "Save changes" : "Save merchant"}
             </>
           )}
         </button>

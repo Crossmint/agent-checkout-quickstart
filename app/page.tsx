@@ -86,6 +86,10 @@ function CheckoutApp() {
     setPacks((prev) => [pack, ...prev.filter((p) => p.id !== pack.id)]);
   }, []);
 
+  const handlePackUpdated = useCallback((pack: PackManifest) => {
+    setPacks((prev) => prev.map((p) => (p.id === pack.id ? pack : p)));
+  }, []);
+
   const handlePackDeleted = useCallback((id: string) => {
     removeStoredPackId(id);
     setPacks((prev) => prev.filter((p) => p.id !== id));
@@ -308,6 +312,7 @@ function CheckoutApp() {
             packs={packs}
             loading={packsLoading}
             onCreated={handlePackCreated}
+            onUpdated={handlePackUpdated}
             onDeleted={handlePackDeleted}
           />
         ) : !checkout ? (
