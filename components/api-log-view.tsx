@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { ChevronRight } from "lucide-react";
-import type { ApiCall } from "@/lib/agentic-checkout-types";
+import type { ApiCall } from "@/lib/agent-checkout-types";
 
 const METHOD_COLOR: Record<ApiCall["method"], string> = {
   POST: "#05B959",

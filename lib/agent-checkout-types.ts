@@ -1,4 +1,4 @@
-// ─── Agentic Checkouts API types ────────────────────────────────────────────
+// ─── Agent Checkouts API types ────────────────────────────────────────────
 // Mirrors the shape returned by ${CROSSMINT_BASE_URL}/api/unstable/agent-checkouts.
 
 /** A generic JSON Schema, as carried by a pending user action's responseSchema. */

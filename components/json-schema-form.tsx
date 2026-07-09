@@ -16,7 +16,7 @@ import {
   type WidgetProps,
 } from "@rjsf/utils";
 import validator from "@rjsf/validator-ajv8";
-import type { JsonSchema } from "@/lib/agentic-checkout-types";
+import type { JsonSchema } from "@/lib/agent-checkout-types";
 import { type ChangeEvent, type ReactElement, type ReactNode, useCallback, useMemo } from "react";
 
 /**

@@ -1,7 +1,7 @@
 "use client";
 
 import { CheckCircle2, XCircle, Ban, ExternalLink, Clock } from "lucide-react";
-import type { CheckoutView, Money } from "@/lib/agentic-checkout-types";
+import type { CheckoutView, Money } from "@/lib/agent-checkout-types";
 
 function formatMoney(total?: Money | string): string | null {
   if (!total) return null;

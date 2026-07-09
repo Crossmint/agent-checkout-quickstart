@@ -13,7 +13,7 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning className={`antialiased font-sans ${geist.variable} ${manrope.variable}`}>
       <head>
-        <title>Agentic Checkouts</title>
+        <title>Agent Checkouts</title>
       </head>
       <body>
         <Providers>

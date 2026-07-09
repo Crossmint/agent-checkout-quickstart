@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 import { Hand, AlertTriangle } from "lucide-react";
-import type { PendingUserAction } from "@/lib/agentic-checkout-types";
+import type { PendingUserAction } from "@/lib/agent-checkout-types";
 import { JsonSchemaForm } from "@/components/json-schema-form";
 
 /**

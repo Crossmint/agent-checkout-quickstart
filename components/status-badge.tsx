@@ -1,7 +1,7 @@
 "use client";
 
 import { Loader2, Clock, Bot, Hand, CheckCircle2, XCircle, Ban } from "lucide-react";
-import type { CheckoutStatus } from "@/lib/agentic-checkout-types";
+import type { CheckoutStatus } from "@/lib/agent-checkout-types";
 
 const CONFIG: Record<
   CheckoutStatus,

@@ -6,14 +6,14 @@ import {
   createBuyerProfile,
   deleteBuyerProfile,
   updateBuyerProfile,
-} from "@/lib/agentic-checkout-api";
+} from "@/lib/agent-checkout-api";
 import type {
   ApiCall,
   BuyerProfile,
   CreateBuyerProfileInput,
   UpdateBuyerProfileInput,
-} from "@/lib/agentic-checkout-types";
-import { buildCreateBuyerProfileBody } from "@/lib/agentic-checkout-types";
+} from "@/lib/agent-checkout-types";
+import { buildCreateBuyerProfileBody } from "@/lib/agent-checkout-types";
 import { BuyerProfileForm } from "@/components/buyer-profile-form";
 import { ViewSwitch, type ViewMode } from "@/components/view-switch";
 import { ApiLogView } from "@/components/api-log-view";
