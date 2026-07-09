@@ -6,12 +6,21 @@ export function Footer() {
       <div className="flex flex-wrap items-center justify-center gap-6 text-sm text-[#00150d]/50">
         <a
           className="flex items-center gap-2 transition-colors hover:text-[#00150d]"
-          href="https://github.com/Crossmint/agentic-checkout-quickstart"
+          href="https://github.com/Crossmint/agent-checkout-quickstart"
           target="_blank"
           rel="noopener noreferrer"
         >
           <Image aria-hidden src="/file.svg" alt="File icon" width={14} height={14} />
           View code
+        </a>
+        <a
+          className="flex items-center gap-2 transition-colors hover:text-[#00150d]"
+          href="https://agent-checkouts.demos-crossmint.com"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          <Image aria-hidden src="/globe.svg" alt="Globe icon" width={14} height={14} />
+          Live demo
         </a>
         <a
           className="flex items-center gap-2 transition-colors hover:text-[#00150d]"
