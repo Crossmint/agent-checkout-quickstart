@@ -180,10 +180,11 @@ function CheckoutApp() {
 
   // Step 2 submit: attach the step-1 profile and the high cost cap, then create.
   const handleStartCheckout = useCallback(
-    (targetUrl: string, request: string) => {
+    (targetUrl: string, request: string, merchantContext: string) => {
       handleCreate({
         targetUrl,
         request,
+        merchantContext: merchantContext.trim() || undefined,
         maxCostAmount: HIGH_MAX_COST.amount,
         maxCostCurrency: HIGH_MAX_COST.currency,
         buyerProfileId: effectiveSelectedId ?? undefined,

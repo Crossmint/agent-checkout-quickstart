@@ -174,6 +174,9 @@ export type ActionAck = {
 export type CreateCheckoutInput = {
   targetUrl: string;
   request?: string;
+  // Optional free-text guidance for unusual checkouts (no cart, custom labels, a
+  // non-obvious path to pay). Tells the agent exactly what to click on this site.
+  merchantContext?: string;
   maxCostAmount?: string;
   maxCostCurrency?: string;
   orderRef?: string;
@@ -191,6 +194,8 @@ export function buildCreateCheckoutBody(input: CreateCheckoutInput) {
       kind: "direct_url",
       url: input.targetUrl,
       ...(input.request ? { request: input.request } : {}),
+      // Only for unusual checkouts — steers the agent through non-standard flows.
+      ...(input.merchantContext ? { merchantContext: input.merchantContext } : {}),
     },
     // Optional: attach a saved buyer profile by id so the agent reuses the
     // buyer's name/contact/shipping instead of asking for them.
