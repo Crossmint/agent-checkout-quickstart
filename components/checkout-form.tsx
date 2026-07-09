@@ -1,17 +1,15 @@
 "use client";
 
 import { useState } from "react";
-import { AlertTriangle, ArrowLeft, Loader2, ShoppingBag } from "lucide-react";
+import { ArrowLeft, Loader2, ShoppingBag } from "lucide-react";
 
 // The example prompt — one instruction per line so it reads as a structured
-// list. The card is Stripe's TEST card (4242…), a fake number that can't charge
-// anyone, so it's safe to show and paste.
+// list. Payment *method* can be set here (e.g. "pay by card"), but the card
+// details themselves aren't accepted in the request yet: the agent prompts for
+// them during checkout (step 3).
 const EXAMPLE_REQUEST = [
   "buy size M",
   "pay by card",
-  "card 4242 4242 4242 4242",
-  "exp 12/34",
-  "cvc 123",
   "cheapest delivery",
   "billing same as shipping",
 ].join("\n");
@@ -57,21 +55,10 @@ export function CheckoutForm({
         <textarea
           value={request}
           onChange={(e) => setRequest(e.target.value)}
-          rows={7}
+          rows={4}
           maxLength={4000}
           className={`${inputClass} resize-none font-mono text-[13px] leading-relaxed`}
         />
-        <div className="mt-2 flex gap-2 rounded-[8px] border border-amber-300/70 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-900">
-          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
-          <span>
-            Agent and single-use virtual cards are safe because they are scoped or one-time —
-            Visa and Mastercard both put them out of PCI-DSS scope. So paste one of those, or a
-            test card (like the Stripe 4242… number above) —{" "}
-            <span className="font-medium">never a real card number</span>: this request is sent
-            and stored as plain text, not a PCI-compliant field, so a leaked reusable PAN could
-            be used to charge the card.
-          </span>
-        </div>
       </Field>
 
       {error && (

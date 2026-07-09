@@ -41,11 +41,14 @@ export function ActionForm({
   return (
     <div className="max-h-[80vh] overflow-y-auto rounded-[12px] border border-[#f59e0b]/25 bg-white p-5 shadow-2xl">
       {looksLikePayment && (
-        <div className="mb-3 flex items-start gap-2 rounded-lg bg-white/70 px-3 py-2 text-xs text-[#92400e]">
+        <div className="mb-3 flex items-start gap-2 rounded-lg border border-amber-300/70 bg-amber-50 px-3 py-2 text-xs leading-relaxed text-amber-900">
           <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
           <span>
-            This looks like a payment step. In v1 these values travel as plaintext —
-            use only test data in this demo.
+            Only enter an agent card, single-use virtual card, or test card —{" "}
+            <span className="font-medium">never a real card number</span>. These values are sent
+            and stored as plain text, not a PCI-compliant field, so a leaked reusable PAN could
+            be used to charge the card. Agent and single-use virtual cards are safe because they
+            are scoped or one-time — Visa and Mastercard both put them out of PCI-DSS scope.
           </span>
         </div>
       )}
