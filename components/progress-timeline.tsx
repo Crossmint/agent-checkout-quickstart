@@ -2,7 +2,7 @@
 
 import { useEffect, useRef } from "react";
 import { Check, Hand } from "lucide-react";
-import type { ProgressItem } from "@/lib/agentic-checkout-types";
+import type { ProgressItem } from "@/lib/agent-checkout-types";
 
 function itemLabel(item: ProgressItem): string {
   return (

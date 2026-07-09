@@ -69,7 +69,7 @@ export function LoginScreen() {
     <div className="flex min-h-dvh flex-col items-center justify-center bg-[#F7F5F4] px-6">
       <div className="mb-8 max-w-md text-center">
         <h1 className="font-[family-name:var(--font-heading)] text-[28px] font-medium leading-none tracking-[-0.84px] text-[#00150d]">
-          Agentic Checkouts
+          Agent Checkouts
         </h1>
         <p className="mt-3 text-sm text-[#00150d]/55">
           Sign in to hand a product URL and an instruction to an agent. It drives a real

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Loader2, UserRound } from "lucide-react";
-import type { BuyerProfile, CreateBuyerProfileInput } from "@/lib/agentic-checkout-types";
+import type { BuyerProfile, CreateBuyerProfileInput } from "@/lib/agent-checkout-types";
 
 export function BuyerProfileForm({
   initialProfile,

@@ -11,7 +11,7 @@ import {
   cancelCheckout,
   resolveEmbedUrl,
   listAllBuyerProfiles,
-} from "@/lib/agentic-checkout-api";
+} from "@/lib/agent-checkout-api";
 import { LoginScreen } from "@/components/login-screen";
 import {
   buildCreateCheckoutBody,
@@ -20,7 +20,7 @@ import {
   type BuyerProfile,
   type CheckoutView,
   type CreateCheckoutInput,
-} from "@/lib/agentic-checkout-types";
+} from "@/lib/agent-checkout-types";
 import { CheckoutForm } from "@/components/checkout-form";
 import { StatusBadge } from "@/components/status-badge";
 import { ProgressTimeline } from "@/components/progress-timeline";
@@ -47,7 +47,7 @@ type FlowStep = "profile" | "buy";
 function CheckoutApp() {
   const stytch = useStytch();
   const { user } = useStytchUser();
-  // The Stytch session JWT authorizes every Agentic Checkouts call on behalf of
+  // The Stytch session JWT authorizes every Agent Checkouts call on behalf of
   // the signed-in user. Read it fresh per call so a refreshed session is picked up.
   const getJwt = useCallback(() => stytch.session.getTokens()?.session_jwt ?? "", [stytch]);
 
@@ -308,7 +308,7 @@ function CheckoutApp() {
         <header className="mb-6 flex items-end justify-between">
           <div>
             <h1 className="font-[family-name:var(--font-heading)] text-[28px] font-medium leading-none tracking-[-0.84px] text-[#00150d]">
-              Agentic Checkouts
+              Agent Checkouts
             </h1>
             <p className="mt-2 max-w-xl text-sm text-[#00150d]/55">
               Hand a product URL and an instruction to an agent. It drives a real browser to

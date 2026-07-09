@@ -2,7 +2,7 @@
 <img width="200" alt="Crossmint" src="https://github.com/user-attachments/assets/8b617791-cd37-4a5a-8695-a7c9018b7c70" />
 <br>
 <br>
-<h1>Agentic Checkouts Quickstart</h1>
+<h1>Agent Checkouts Quickstart</h1>
 
 <div align="center">
 <a href="https://docs.crossmint.com/agents/overview">Docs</a> | <a href="https://www.crossmint.com/quickstarts">See all quickstarts</a>
@@ -14,7 +14,7 @@
 
 ## Introduction
 
-Hand an agent a product URL and an instruction and let it check out for you. This quickstart drives Crossmint's **Agentic Checkouts API** end to end: it creates a checkout, watches a real automated browser session work through the merchant's pages, pauses to collect anything only a human can answer (shipping, payment), and reports back with a receipt.
+Hand an agent a product URL and an instruction and let it check out for you. This quickstart drives Crossmint's **Agent Checkouts API** end to end: it creates a checkout, watches a real automated browser session work through the merchant's pages, pauses to collect anything only a human can answer (shipping, payment), and reports back with a receipt.
 
 The app walks you through **three steps**:
 
@@ -32,7 +32,7 @@ The app walks you through **three steps**:
 
 ## How it works
 
-The app calls four endpoints under `${NEXT_PUBLIC_CROSSMINT_BASE_URL}/api/unstable/agent-checkouts` (`lib/agentic-checkout-api.ts`):
+The app calls four endpoints under `${NEXT_PUBLIC_CROSSMINT_BASE_URL}/api/unstable/agent-checkouts` (`lib/agent-checkout-api.ts`):
 
 | Step | Call | Result |
 | --- | --- | --- |
@@ -49,7 +49,7 @@ Terminal states carry a `receipt` (`succeeded`) or a `failure` with a `reason` o
 
 A **buyer profile** is a project-scoped, reusable set of the buyer's details — **name, contact, and shipping only** (there is deliberately no payment block). Save one, then attach it to any checkout so the agent fills those fields from it instead of asking every time.
 
-Profile endpoints live under `…/agent-checkouts/buyer-profiles` (`lib/agentic-checkout-api.ts`):
+Profile endpoints live under `…/agent-checkouts/buyer-profiles` (`lib/agent-checkout-api.ts`):
 
 | Call | Result |
 | --- | --- |
@@ -94,7 +94,7 @@ NEXT_PUBLIC_STYTCH_PUBLIC_TOKEN=public-token-live-...
 # Public by design — restrict it with allowed-origins in the Crossmint console.
 NEXT_PUBLIC_CROSSMINT_API_KEY=ck_production_...
 
-# Production host for the Agentic Checkouts API.
+# Production host for the Agent Checkouts API.
 NEXT_PUBLIC_CROSSMINT_BASE_URL=https://www.crossmint.com
 ```
 

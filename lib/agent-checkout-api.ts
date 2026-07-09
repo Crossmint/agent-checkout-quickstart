@@ -1,4 +1,4 @@
-// Client-side calls for the Agentic Checkouts lifecycle.
+// Client-side calls for the Agent Checkouts lifecycle.
 //
 // These functions run in the BROWSER. The checkout endpoints accept a
 // client-side API key (ck_...); because the request originates from the browser,
@@ -23,7 +23,7 @@ import {
   type CreateBuyerProfileInput,
   type CreateCheckoutInput,
   type UpdateBuyerProfileInput,
-} from "@/lib/agentic-checkout-types";
+} from "@/lib/agent-checkout-types";
 
 const BASE_URL = (process.env.NEXT_PUBLIC_CROSSMINT_BASE_URL ?? "http://localhost:3000").replace(/\/$/, "");
 const API_BASE = `${BASE_URL}/api/unstable/agent-checkouts`;
@@ -51,7 +51,7 @@ function log(label: string, data: unknown) {
   console.log(`${"─".repeat(60)}\n`);
 }
 
-// The Agentic Checkouts API authorizes the call on behalf of a signed-in user.
+// The Agent Checkouts API authorizes the call on behalf of a signed-in user.
 // `jwt` is the Stytch session JWT (see app/providers.tsx) — without it the API
 // responds 401 "No authentication header provided", even with a valid ck_ key.
 function authHeaders(jwt: string): HeadersInit {
