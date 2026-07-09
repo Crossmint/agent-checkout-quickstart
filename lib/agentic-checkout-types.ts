@@ -1,5 +1,5 @@
 // ─── Agentic Checkouts API types ────────────────────────────────────────────
-// Mirrors the shape returned by ${CROSSMINT_BASE_URL}/api/unstable/agentic-checkouts.
+// Mirrors the shape returned by ${CROSSMINT_BASE_URL}/api/unstable/agent-checkouts.
 
 /** A generic JSON Schema, as carried by a pending user action's responseSchema. */
 export type JsonSchema = {
@@ -53,71 +53,66 @@ export type ProgressItem = {
 
 export type Money = { amount: string; currency: string };
 
-// ─── Packs ──────────────────────────────────────────────────────────────────
-// A pack is a project-scoped bundle of agentic instructions for ONE merchant.
-// It carries the merchant's identity (display name + domains) and a record of
-// "phases" — each phase says when it applies (`applicability`) and what the
-// agent should do (`instructions`). Attach a pack to a checkout via `packId`
-// and the agent follows the pack's phases through that merchant's flow.
+// ─── Buyer profiles ───────────────────────────────────────────────────────--
+// A buyer profile is a project-scoped, reusable set of the buyer's details —
+// name, contact, and shipping ONLY (there is no payment block). Save one, then
+// attach it to any number of checkouts by passing its id as `buyerProfileId`,
+// so the agent fills shipping/contact from it instead of asking every time.
 
-/** A single phase of a pack — keyed by a snake_case id in the `phases` record. */
-export type PackPhase = {
-  // When this phase applies, in natural language (≤4000 chars).
-  applicability: string;
-  // What the agent should do while in this phase (≤20000 chars).
-  instructions: string;
-  // Optional human label for the phase (≤200 chars).
-  description?: string;
+/** Buyer name. Both parts optional, 1–100 chars each. */
+export type BuyerName = { first?: string; last?: string };
+
+/** Buyer contact. Both parts optional. */
+export type BuyerContact = { email?: string; phone?: string };
+
+/**
+ * Shipping destination. `countryCode` (ISO 3166-1 alpha-2) is required;
+ * `administrativeAreaCode` (ISO 3166-2) must be prefixed with the country code
+ * (e.g. "US-CA") and is nullable, as is `postalCode`.
+ */
+export type BuyerShipping = {
+  addressLines: string[];
+  locality: string;
+  administrativeAreaCode?: string | null;
+  postalCode?: string | null;
+  countryCode: string;
 };
 
-/** phases: snake_case id → phase body. At least one, at most 50 per pack. */
-export type PackPhases = Record<string, PackPhase>;
-
-/** The merchant a pack guides checkout for. */
-export type PackMerchant = {
-  // Optional kebab-case handle. Derived from the primary domain when omitted.
-  slug?: string;
-  displayName: string;
-  // Canonical lowercase hostnames (no protocol/path), e.g. ["nike.com"].
-  domains: string[];
-};
-
-/** The read model returned by every pack endpoint (create / get / update). */
-export type PackManifest = {
-  schemaVersion: number;
+/** The read model returned by every buyer-profile endpoint (create/get/list/update). */
+export type BuyerProfile = {
   id: string;
-  description?: string;
-  merchant: PackMerchant;
-  phases: PackPhases;
-  // How many checkouts have run against this pack.
-  timesUsed: number;
+  label?: string;
+  name?: BuyerName;
+  contact?: BuyerContact;
+  shipping: BuyerShipping;
   createdAt: string;
   updatedAt: string;
 };
 
-/** Body for POST /agentic-checkouts/packs. */
-export type CreatePackInput = {
-  description?: string;
-  merchant: PackMerchant;
-  phases: PackPhases;
-};
-
-/** Body for PATCH /agentic-checkouts/packs/:id. Phases replace the whole record. */
-export type UpdatePackInput = {
-  // `null` clears the stored description.
-  description?: string | null;
-  merchant?: PackMerchant;
-  phases?: PackPhases;
+/** Body for POST /agent-checkouts/buyer-profiles. `shipping` is required. */
+export type CreateBuyerProfileInput = {
+  label?: string;
+  name?: BuyerName;
+  contact?: BuyerContact;
+  shipping: BuyerShipping;
 };
 
 /**
- * Pack provenance attached to a checkout view once a pack has driven the run.
- * Captured on the run's event stream, so it survives a later pack edit/delete.
+ * Body for PATCH /agent-checkouts/buyer-profiles/:id — any subset of writable
+ * fields (at least one; an empty patch is a 400). `shipping` may itself be partial.
  */
-export type IntentPackUsage = {
-  packId: string;
-  merchantDisplayName: string;
-  phasesUsed: string[];
+export type UpdateBuyerProfileInput = {
+  label?: string;
+  name?: BuyerName;
+  contact?: BuyerContact;
+  shipping?: Partial<BuyerShipping>;
+};
+
+/** One keyset-paginated page of GET /agent-checkouts/buyer-profiles. */
+export type BuyerProfilesPage = {
+  data: BuyerProfile[];
+  // Opaque cursor for the next page; `null` on the last page.
+  nextCursor: string | null;
 };
 
 export type Receipt = {
@@ -155,8 +150,6 @@ export type CheckoutView = {
     maxCost: Money;
   };
   metadata?: Record<string, unknown>;
-  // Present once a pack drove (or is driving) this checkout.
-  pack?: IntentPackUsage;
   progressItems: ProgressItem[];
   pendingUserAction?: PendingUserAction;
   browser?: {
@@ -184,8 +177,8 @@ export type CreateCheckoutInput = {
   maxCostAmount?: string;
   maxCostCurrency?: string;
   orderRef?: string;
-  // Optional pack to guide the agent through this merchant's flow.
-  packId?: string;
+  // Optional saved buyer profile whose name/contact/shipping the agent should use.
+  buyerProfileId?: string;
 };
 
 /**
@@ -199,8 +192,9 @@ export function buildCreateCheckoutBody(input: CreateCheckoutInput) {
       url: input.targetUrl,
       ...(input.request ? { request: input.request } : {}),
     },
-    // Optional: a checkout targets one merchant, so at most one pack covers it.
-    ...(input.packId ? { packId: input.packId } : {}),
+    // Optional: attach a saved buyer profile by id so the agent reuses the
+    // buyer's name/contact/shipping instead of asking for them.
+    ...(input.buyerProfileId ? { buyerProfileId: input.buyerProfileId } : {}),
     // constraints.maxCost is required by the API. Collected from the form's
     // "Max cost" + "Currency" fields; the defaults are a fallback only.
     constraints: {
@@ -214,18 +208,17 @@ export function buildCreateCheckoutBody(input: CreateCheckoutInput) {
 }
 
 /**
- * Builds the POST /packs request body, dropping empty optionals so the logged
- * request matches the real wire shape. Phases arrive already keyed by id.
+ * Builds the POST /buyer-profiles request body, dropping empty optionals so the
+ * logged request matches the real wire shape. `shipping` is always sent.
  */
-export function buildCreatePackBody(input: CreatePackInput) {
+export function buildCreateBuyerProfileBody(input: CreateBuyerProfileInput) {
   return {
-    ...(input.description ? { description: input.description } : {}),
-    merchant: {
-      ...(input.merchant.slug ? { slug: input.merchant.slug } : {}),
-      displayName: input.merchant.displayName,
-      domains: input.merchant.domains,
-    },
-    phases: input.phases,
+    ...(input.label ? { label: input.label } : {}),
+    ...(input.name && (input.name.first || input.name.last) ? { name: input.name } : {}),
+    ...(input.contact && (input.contact.email || input.contact.phone)
+      ? { contact: input.contact }
+      : {}),
+    shipping: input.shipping,
   };
 }
 
