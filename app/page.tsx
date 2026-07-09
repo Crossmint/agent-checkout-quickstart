@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { Loader2, RotateCcw, X, Store, ShoppingBag } from "lucide-react";
+import { ArrowRight, Loader2, RotateCcw, X } from "lucide-react";
 import { useStytch, useStytchUser } from "@stytch/nextjs";
 import {
   createCheckout,
@@ -10,18 +10,16 @@ import {
   declineAction,
   cancelCheckout,
   resolveEmbedUrl,
-  getPack,
-  PackNotFoundError,
+  listAllBuyerProfiles,
 } from "@/lib/agentic-checkout-api";
-import { getStoredPackIds, addStoredPackId, removeStoredPackId } from "@/lib/pack-store";
 import { LoginScreen } from "@/components/login-screen";
 import {
   buildCreateCheckoutBody,
   isTerminal,
   type ApiCall,
+  type BuyerProfile,
   type CheckoutView,
   type CreateCheckoutInput,
-  type PackManifest,
 } from "@/lib/agentic-checkout-types";
 import { CheckoutForm } from "@/components/checkout-form";
 import { StatusBadge } from "@/components/status-badge";
@@ -32,12 +30,19 @@ import { OutcomeCard } from "@/components/outcome-card";
 import { Footer } from "@/components/footer";
 import { ViewSwitch, type ViewMode } from "@/components/view-switch";
 import { ApiLogView } from "@/components/api-log-view";
-import { PacksView } from "@/components/packs-view";
+import { BuyerProfilesView } from "@/components/buyer-profiles-view";
+import { Stepper, type Step } from "@/components/stepper";
+import { ElapsedTimer } from "@/components/elapsed-timer";
 
 const POLL_INTERVAL_MS = 1500;
-const BASE_PATH = "/api/unstable/agentic-checkouts";
+const BASE_PATH = "/api/unstable/agent-checkouts";
 
-type Tab = "checkout" | "packs";
+// The API requires constraints.maxCost, but this demo doesn't ask for a budget —
+// it sends a deliberately huge cap so the agent is never blocked on cost.
+const HIGH_MAX_COST = { amount: "1000000.00", currency: "USD" };
+
+// Two pre-checkout steps; the third ("run") is implied once a checkout exists.
+type FlowStep = "profile" | "buy";
 
 function CheckoutApp() {
   const stytch = useStytch();
@@ -49,50 +54,58 @@ function CheckoutApp() {
   const userEmail = user?.emails?.[0]?.email ?? "";
   const userInitial = userEmail[0]?.toUpperCase() ?? "U";
 
-  const [tab, setTab] = useState<Tab>("checkout");
+  // Which pre-checkout step we're on. Once `checkout` is set we're implicitly on
+  // the "run" step regardless of this value.
+  const [step, setStep] = useState<FlowStep>("profile");
+  // The buyer profile picked in step 1 and attached to the checkout in step 2.
+  const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
+  // When the checkout was created, for the elapsed-time display in step 3.
+  const [startedAt, setStartedAt] = useState<number>(0);
 
-  // Packs the agent can be guided by. There's no list endpoint, so we re-fetch
-  // the ids this browser created (see lib/pack-store.ts) and prune any the API
-  // reports gone. Shared between the Packs tab and the checkout form's selector.
-  const [packs, setPacks] = useState<PackManifest[]>([]);
-  const [packsLoading, setPacksLoading] = useState(true);
+  // Saved buyer profiles the agent can reuse. Unlike packs, the API lists them,
+  // so we fetch every page from the server. Shared between step 1's picker and
+  // the profile summary shown in step 2.
+  const [profiles, setProfiles] = useState<BuyerProfile[]>([]);
+  const [profilesLoading, setProfilesLoading] = useState(true);
+
+  // The stored selection, validated against the current list and defaulting to
+  // the first profile. Derived (not stored) so a deleted/absent selection
+  // self-heals without an effect.
+  const effectiveSelectedId =
+    selectedProfileId && profiles.some((p) => p.id === selectedProfileId)
+      ? selectedProfileId
+      : (profiles[0]?.id ?? null);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const ids = getStoredPackIds();
-      const loaded = await Promise.all(
-        ids.map(async (id) => {
-          try {
-            return await getPack(getJwt(), id);
-          } catch (err) {
-            // A 404 means the pack was deleted elsewhere — forget it.
-            if (err instanceof PackNotFoundError) removeStoredPackId(id);
-            return null;
-          }
-        }),
-      );
-      if (cancelled) return;
-      setPacks(loaded.filter((p): p is PackManifest => p !== null));
-      setPacksLoading(false);
+      try {
+        const loaded = await listAllBuyerProfiles(getJwt());
+        if (!cancelled) setProfiles(loaded);
+      } catch (err) {
+        // A failed load shouldn't block the checkout flow — log and move on.
+        console.error("Failed to load buyer profiles:", err);
+      } finally {
+        if (!cancelled) setProfilesLoading(false);
+      }
     })();
     return () => {
       cancelled = true;
     };
   }, [getJwt]);
 
-  const handlePackCreated = useCallback((pack: PackManifest) => {
-    addStoredPackId(pack.id);
-    setPacks((prev) => [pack, ...prev.filter((p) => p.id !== pack.id)]);
+  const handleProfileCreated = useCallback((profile: BuyerProfile) => {
+    setProfiles((prev) => [profile, ...prev.filter((p) => p.id !== profile.id)]);
+    // A freshly created profile becomes the selection so step 1 → 2 flows on.
+    setSelectedProfileId(profile.id);
   }, []);
 
-  const handlePackUpdated = useCallback((pack: PackManifest) => {
-    setPacks((prev) => prev.map((p) => (p.id === pack.id ? pack : p)));
+  const handleProfileUpdated = useCallback((profile: BuyerProfile) => {
+    setProfiles((prev) => prev.map((p) => (p.id === profile.id ? profile : p)));
   }, []);
 
-  const handlePackDeleted = useCallback((id: string) => {
-    removeStoredPackId(id);
-    setPacks((prev) => prev.filter((p) => p.id !== id));
+  const handleProfileDeleted = useCallback((id: string) => {
+    setProfiles((prev) => prev.filter((p) => p.id !== id));
   }, []);
 
   const [checkout, setCheckout] = useState<CheckoutView | null>(null);
@@ -156,6 +169,7 @@ function CheckoutApp() {
     try {
       const view = await createCheckout(getJwt(), input);
       logCall({ method: "POST", path: BASE_PATH, requestBody: buildCreateCheckoutBody(input), response: view });
+      setStartedAt(view.createdAt ? Date.parse(view.createdAt) : Date.now());
       setCheckout(view);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create checkout");
@@ -163,6 +177,20 @@ function CheckoutApp() {
       setCreating(false);
     }
   }, [logCall, getJwt]);
+
+  // Step 2 submit: attach the step-1 profile and the high cost cap, then create.
+  const handleStartCheckout = useCallback(
+    (targetUrl: string, request: string) => {
+      handleCreate({
+        targetUrl,
+        request,
+        maxCostAmount: HIGH_MAX_COST.amount,
+        maxCostCurrency: HIGH_MAX_COST.currency,
+        buyerProfileId: effectiveSelectedId ?? undefined,
+      });
+    },
+    [handleCreate, effectiveSelectedId],
+  );
 
   const handleSubmitAction = useCallback(
     async (values: Record<string, unknown>) => {
@@ -233,6 +261,8 @@ function CheckoutApp() {
     setRespondedActionId(null);
     setApiLog([]);
     setViewMode("ui");
+    // Back to "What to buy" — the buyer profile from step 1 stays selected.
+    setStep("buy");
   };
 
   const status = checkout?.status;
@@ -246,6 +276,15 @@ function CheckoutApp() {
   // we keep the browser visible and show a small non-blocking indicator.
   const showActionForm = Boolean(awaiting && pending && respondedActionId !== pending.id);
   const showProcessing = Boolean(awaiting && pending && respondedActionId === pending.id);
+
+  // Which step to render: a live checkout is always step 3.
+  const currentStep: Step = checkout ? 3 : step === "buy" ? 2 : 1;
+  const selectedProfile = profiles.find((p) => p.id === effectiveSelectedId) ?? null;
+  const selectedProfileName = selectedProfile
+    ? selectedProfile.label ||
+      [selectedProfile.name?.first, selectedProfile.name?.last].filter(Boolean).join(" ") ||
+      "Buyer profile"
+    : null;
 
   return (
     <div className="relative flex min-h-dvh flex-col bg-[#F7F5F4]">
@@ -276,7 +315,7 @@ function CheckoutApp() {
               the checkout, pauses for anything only you can answer, and reports back.
             </p>
           </div>
-          {tab === "checkout" && checkout && (
+          {checkout && (
             <div className="flex shrink-0 items-center gap-4">
               <ViewSwitch view={viewMode} onChange={setViewMode} />
               <button
@@ -289,46 +328,63 @@ function CheckoutApp() {
           )}
         </header>
 
-        {/* Tab nav: Checkout ↔ Packs */}
-        <nav className="mb-9 flex items-center gap-1 border-b border-[rgba(0,0,0,0.08)]">
-          <TabButton active={tab === "checkout"} onClick={() => setTab("checkout")}>
-            <ShoppingBag className="size-3.5" />
-            Checkout
-          </TabButton>
-          <TabButton active={tab === "packs"} onClick={() => setTab("packs")}>
-            <Store className="size-3.5" />
-            Merchants
-            {packs.length > 0 && (
-              <span className="rounded-full bg-black/[0.06] px-1.5 text-[11px] text-[#00150d]/50">
-                {packs.length}
-              </span>
-            )}
-          </TabButton>
-        </nav>
+        {/* Step 1 → 2 → 3 progress. Earlier steps are clickable until the
+            checkout is live. */}
+        <Stepper
+          current={currentStep}
+          onStep={checkout ? undefined : (n) => setStep(n === 1 ? "profile" : "buy")}
+        />
 
-        {tab === "packs" ? (
-          <PacksView
-            getJwt={getJwt}
-            packs={packs}
-            loading={packsLoading}
-            onCreated={handlePackCreated}
-            onUpdated={handlePackUpdated}
-            onDeleted={handlePackDeleted}
-          />
-        ) : !checkout ? (
-          /* ── Create form ──────────────────────────────────────────────── */
-          <div key="form" className="animate-fade-in mx-auto max-w-[520px]">
-            <div className="rounded-[12px] bg-white p-6">
-              <h2 className="mb-1 font-[family-name:var(--font-heading)] text-[18px] font-medium text-[#00150d]">
-                New checkout
-              </h2>
-              <p className="mb-5 text-sm text-[#00150d]/55">
-                The agent will try to buy this item for you.
-              </p>
-              <CheckoutForm onSubmit={handleCreate} submitting={creating} error={error} packs={packs} />
+        {currentStep === 1 ? (
+          /* ── Step 1: pick or create a buyer profile ───────────────────── */
+          <div key="step-profile" className="animate-fade-in">
+            <BuyerProfilesView
+              getJwt={getJwt}
+              profiles={profiles}
+              loading={profilesLoading}
+              onCreated={handleProfileCreated}
+              onUpdated={handleProfileUpdated}
+              onDeleted={handleProfileDeleted}
+              selectable
+              selectedId={effectiveSelectedId}
+              onSelect={setSelectedProfileId}
+            />
+            <div className="mx-auto mt-5 flex max-w-[680px] justify-end">
+              <button
+                onClick={() => setStep("buy")}
+                disabled={!effectiveSelectedId}
+                className="flex items-center gap-1.5 rounded-[8px] bg-[#05B959] px-5 py-2.5 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40"
+              >
+                Continue <ArrowRight className="size-4" />
+              </button>
             </div>
           </div>
-        ) : viewMode === "code" ? (
+        ) : currentStep === 2 ? (
+          /* ── Step 2: what to buy ──────────────────────────────────────── */
+          <div key="step-buy" className="animate-fade-in mx-auto max-w-[520px]">
+            <div className="rounded-[12px] bg-white p-6">
+              <h2 className="mb-1 font-[family-name:var(--font-heading)] text-[18px] font-medium text-[#00150d]">
+                What do you want to buy?
+              </h2>
+              <p className="mb-5 text-sm text-[#00150d]/55">
+                Paste a product URL and tell the agent what to do.
+                {selectedProfileName && (
+                  <>
+                    {" "}
+                    Shipping to{" "}
+                    <span className="font-medium text-[#00150d]/80">{selectedProfileName}</span>.
+                  </>
+                )}
+              </p>
+              <CheckoutForm
+                onSubmit={handleStartCheckout}
+                onBack={() => setStep("profile")}
+                submitting={creating}
+                error={error}
+              />
+            </div>
+          </div>
+        ) : !checkout ? null : viewMode === "code" ? (
           /* ── Code view: live log of the API calls ─────────────────────── */
           <div key="code" className="animate-fade-in">
             <ApiLogView calls={apiLog} />
@@ -357,19 +413,33 @@ function CheckoutApp() {
 
             {/* Video + outcome — right (wide) */}
             <main className="min-w-0 space-y-4">
-              <div className="flex items-center justify-between">
-                <p className="truncate text-xs text-[#00150d]/45">{checkout.target.url}</p>
-                {!terminal && (
-                  <button
-                    onClick={handleCancel}
-                    disabled={cancelling}
-                    className="flex shrink-0 items-center gap-1.5 text-xs text-[#00150d]/40 transition-colors hover:text-red-500 disabled:opacity-50"
-                  >
-                    {cancelling ? <Loader2 className="size-3 animate-spin" /> : <X className="size-3" />}
-                    Cancel
-                  </button>
-                )}
+              <div className="flex items-center justify-between gap-4">
+                <p className="min-w-0 truncate text-xs text-[#00150d]/45">{checkout.target.url}</p>
+                <div className="flex shrink-0 items-center gap-4">
+                  <ElapsedTimer startedAt={startedAt} running={!terminal} />
+                  {!terminal && (
+                    <button
+                      onClick={handleCancel}
+                      disabled={cancelling}
+                      className="flex items-center gap-1.5 text-xs text-[#00150d]/40 transition-colors hover:text-red-500 disabled:opacity-50"
+                    >
+                      {cancelling ? <Loader2 className="size-3 animate-spin" /> : <X className="size-3" />}
+                      Cancel
+                    </button>
+                  )}
+                </div>
               </div>
+
+              {/* Instruction the agent is working from. */}
+              {checkout.target.request && (
+                <div className="rounded-[8px] bg-white px-4 py-3">
+                  <p className="text-[11px] font-medium uppercase tracking-wide text-[#00150d]/40">
+                    Instruction
+                  </p>
+                  <p className="mt-1 text-sm text-[#00150d]">“{checkout.target.request}”</p>
+                  <p className="mt-1 font-mono text-[11px] text-[#00150d]/30">{checkout.id}</p>
+                </div>
+              )}
 
               {/* The video sits in a relative wrapper so the action modal can
                   overlay it precisely. */}
@@ -402,35 +472,6 @@ function CheckoutApp() {
                 )}
               </div>
 
-              {checkout.target.request && (
-                <div className="rounded-[8px] bg-white px-4 py-3">
-                  <p className="text-sm text-[#00150d]">“{checkout.target.request}”</p>
-                  <p className="mt-1 font-mono text-[11px] text-[#00150d]/30">{checkout.id}</p>
-                </div>
-              )}
-
-              {/* Pack provenance: which pack (and phases) guided this run. */}
-              {checkout.pack && (
-                <div className="flex flex-wrap items-center gap-2 rounded-[8px] bg-white px-4 py-3 text-sm">
-                  <Store className="size-4 shrink-0 text-[#05B959]" />
-                  <span className="text-[#00150d]">
-                    Guided by <span className="font-medium">{checkout.pack.merchantDisplayName}</span>
-                  </span>
-                  {checkout.pack.phasesUsed.length > 0 && (
-                    <span className="flex flex-wrap gap-1">
-                      {checkout.pack.phasesUsed.map((id) => (
-                        <span
-                          key={id}
-                          className="rounded-full bg-black/[0.04] px-2 py-0.5 font-mono text-[11px] text-[#00150d]/60"
-                        >
-                          {id}
-                        </span>
-                      ))}
-                    </span>
-                  )}
-                </div>
-              )}
-
               {terminal && <OutcomeCard checkout={checkout} />}
             </main>
           </div>
@@ -439,29 +480,6 @@ function CheckoutApp() {
 
       <Footer />
     </div>
-  );
-}
-
-function TabButton({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`-mb-px flex items-center gap-1.5 border-b-2 px-3 pb-2.5 text-sm font-medium transition-colors ${
-        active
-          ? "border-[#05B959] text-[#00150d]"
-          : "border-transparent text-[#00150d]/45 hover:text-[#00150d]/70"
-      }`}
-    >
-      {children}
-    </button>
   );
 }
 

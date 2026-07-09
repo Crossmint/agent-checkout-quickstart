@@ -15,18 +15,19 @@
 
 import {
   buildCreateCheckoutBody,
-  buildCreatePackBody,
+  buildCreateBuyerProfileBody,
   type ActionAck,
+  type BuyerProfile,
+  type BuyerProfilesPage,
   type CheckoutView,
+  type CreateBuyerProfileInput,
   type CreateCheckoutInput,
-  type CreatePackInput,
-  type PackManifest,
-  type UpdatePackInput,
+  type UpdateBuyerProfileInput,
 } from "@/lib/agentic-checkout-types";
 
 const BASE_URL = (process.env.NEXT_PUBLIC_CROSSMINT_BASE_URL ?? "http://localhost:3000").replace(/\/$/, "");
-const API_BASE = `${BASE_URL}/api/unstable/agentic-checkouts`;
-const PACKS_BASE = `${API_BASE}/packs`;
+const API_BASE = `${BASE_URL}/api/unstable/agent-checkouts`;
+const BUYER_PROFILES_BASE = `${API_BASE}/buyer-profiles`;
 const API_KEY = process.env.NEXT_PUBLIC_CROSSMINT_API_KEY ?? "";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -81,7 +82,7 @@ async function readError(res: Response): Promise<string> {
 export async function createCheckout(jwt: string, input: CreateCheckoutInput): Promise<CheckoutView> {
   const body = buildCreateCheckoutBody(input);
 
-  log("POST /agentic-checkouts → request body", body);
+  log("POST /agent-checkouts → request body", body);
   const res = await fetch(API_BASE, {
     method: "POST",
     headers: authHeaders(jwt),
@@ -90,7 +91,7 @@ export async function createCheckout(jwt: string, input: CreateCheckoutInput): P
   });
   if (!res.ok) throw new Error(`Failed to create checkout (${res.status}): ${await readError(res)}`);
   const data: CheckoutView = await res.json();
-  log("POST /agentic-checkouts → response", data);
+  log("POST /agent-checkouts → response", data);
   return data;
 }
 
@@ -122,7 +123,7 @@ export async function submitAction(
   values: Record<string, unknown>,
 ): Promise<ActionAck> {
   const body = { action: "submit", values };
-  log(`POST /agentic-checkouts/${checkoutId}/actions/${actionId} → request body`, body);
+  log(`POST /agent-checkouts/${checkoutId}/actions/${actionId} → request body`, body);
   const res = await fetch(`${API_BASE}/${checkoutId}/actions/${actionId}`, {
     method: "POST",
     headers: authHeaders(jwt),
@@ -131,7 +132,7 @@ export async function submitAction(
   });
   if (!res.ok) throw new Error(`Failed to submit action (${res.status}): ${await readError(res)}`);
   const data: ActionAck = await res.json();
-  log(`POST /agentic-checkouts/${checkoutId}/actions/${actionId} → response`, data);
+  log(`POST /agent-checkouts/${checkoutId}/actions/${actionId} → response`, data);
   return data;
 }
 
@@ -143,7 +144,7 @@ export async function declineAction(
   reason?: string,
 ): Promise<ActionAck> {
   const body = { action: "decline", ...(reason ? { reason } : {}) };
-  log(`POST /agentic-checkouts/${checkoutId}/actions/${actionId} → decline`, body);
+  log(`POST /agent-checkouts/${checkoutId}/actions/${actionId} → decline`, body);
   const res = await fetch(`${API_BASE}/${checkoutId}/actions/${actionId}`, {
     method: "POST",
     headers: authHeaders(jwt),
@@ -152,7 +153,7 @@ export async function declineAction(
   });
   if (!res.ok) throw new Error(`Failed to decline action (${res.status}): ${await readError(res)}`);
   const data: ActionAck = await res.json();
-  log(`POST /agentic-checkouts/${checkoutId}/actions/${actionId} → declined`, data);
+  log(`POST /agent-checkouts/${checkoutId}/actions/${actionId} → declined`, data);
   return data;
 }
 
@@ -160,90 +161,133 @@ export async function declineAction(
 
 /** Cancel a checkout. Async — the status flips to "cancelled" on a later poll. */
 export async function cancelCheckout(jwt: string, id: string): Promise<void> {
-  log("DELETE /agentic-checkouts/:id → request", { id });
+  log("DELETE /agent-checkouts/:id → request", { id });
   const res = await fetch(`${API_BASE}/${id}`, {
     method: "DELETE",
     headers: authHeaders(jwt),
     cache: "no-store",
   });
   if (!res.ok) throw new Error(`Failed to cancel checkout (${res.status}): ${await readError(res)}`);
-  log("DELETE /agentic-checkouts/:id → accepted", { id, status: res.status });
+  log("DELETE /agent-checkouts/:id → accepted", { id, status: res.status });
 }
 
-// ─── Packs ────────────────────────────────────────────────────────────────--
+// ─── Buyer profiles ─────────────────────────────────────────────────────────
 //
-// A pack bundles agentic instructions for ONE merchant. Create it once, then
-// attach it to any number of checkouts by passing its id as `packId`.
+// A buyer profile stores the buyer's name, contact, and shipping (no payment).
+// Create one, then attach it to any checkout by passing its id as
+// `buyerProfileId`. Unlike packs, this resource HAS a keyset-paginated list
+// endpoint, so the app enumerates profiles from the server rather than tracking
+// ids locally.
 //
-//   createPack   POST   /packs        → 201  { id, schemaVersion, ... }
-//   getPack      GET    /packs/:id    → 200
-//   updatePack   PATCH  /packs/:id    → 200  (phases replace the whole record)
-//   deletePack   DELETE /packs/:id    → 204
-//
-// There is NO list endpoint: the API can't enumerate a project's packs. This
-// app remembers the ids it created (see lib/pack-store.ts) and re-fetches each
-// with getPack. The pack scopes (agentic-checkouts.packs.create | read |
-// update | delete) are separate from the checkout scopes — the ck_ key needs
-// both for this quickstart to work end to end.
+//   createBuyerProfile  POST   /buyer-profiles       → 201  the profile
+//   getBuyerProfile     GET    /buyer-profiles/:id   → 200  (404 if not owned)
+//   listBuyerProfiles   GET    /buyer-profiles       → 200  { data, nextCursor }
+//   updateBuyerProfile  PATCH  /buyer-profiles/:id   → 200  the updated profile
+//   deleteBuyerProfile  DELETE /buyer-profiles/:id   → 204
 
-/** Thrown by getPack when a pack no longer exists (404) so callers can prune it. */
-export class PackNotFoundError extends Error {
+/** Thrown by getBuyerProfile when a profile no longer exists / isn't owned (404). */
+export class BuyerProfileNotFoundError extends Error {
   constructor(public readonly id: string) {
-    super(`Pack ${id} not found`);
-    this.name = "PackNotFoundError";
+    super(`Buyer profile ${id} not found`);
+    this.name = "BuyerProfileNotFoundError";
   }
 }
 
-/** Create a pack. Returns the full manifest — save `id` to attach it to checkouts. */
-export async function createPack(jwt: string, input: CreatePackInput): Promise<PackManifest> {
-  const body = buildCreatePackBody(input);
-  log("POST /agentic-checkouts/packs → request body", body);
-  const res = await fetch(PACKS_BASE, {
+/** Create a buyer profile. Returns the full profile — save `id` to attach it to checkouts. */
+export async function createBuyerProfile(
+  jwt: string,
+  input: CreateBuyerProfileInput,
+): Promise<BuyerProfile> {
+  const body = buildCreateBuyerProfileBody(input);
+  log("POST /agent-checkouts/buyer-profiles → request body", body);
+  const res = await fetch(BUYER_PROFILES_BASE, {
     method: "POST",
     headers: authHeaders(jwt),
     body: JSON.stringify(body),
     cache: "no-store",
   });
-  if (!res.ok) throw new Error(`Failed to create pack (${res.status}): ${await readError(res)}`);
-  const data: PackManifest = await res.json();
-  log("POST /agentic-checkouts/packs → response", data);
+  if (!res.ok) throw new Error(`Failed to create buyer profile (${res.status}): ${await readError(res)}`);
+  const data: BuyerProfile = await res.json();
+  log("POST /agent-checkouts/buyer-profiles → response", data);
   return data;
 }
 
-/** Fetch a single pack manifest. Throws PackNotFoundError on a 404. */
-export async function getPack(jwt: string, id: string): Promise<PackManifest> {
-  const res = await fetch(`${PACKS_BASE}/${id}`, {
+/** Fetch a single buyer profile. Throws BuyerProfileNotFoundError on a 404. */
+export async function getBuyerProfile(jwt: string, id: string): Promise<BuyerProfile> {
+  const res = await fetch(`${BUYER_PROFILES_BASE}/${id}`, {
     headers: authHeaders(jwt),
     cache: "no-store",
   });
-  if (res.status === 404) throw new PackNotFoundError(id);
-  if (!res.ok) throw new Error(`Failed to fetch pack (${res.status}): ${await readError(res)}`);
-  return (await res.json()) as PackManifest;
+  if (res.status === 404) throw new BuyerProfileNotFoundError(id);
+  if (!res.ok) throw new Error(`Failed to fetch buyer profile (${res.status}): ${await readError(res)}`);
+  return (await res.json()) as BuyerProfile;
 }
 
-/** Update a pack. Any provided `phases` replace the stored record wholesale. */
-export async function updatePack(jwt: string, id: string, input: UpdatePackInput): Promise<PackManifest> {
-  log(`PATCH /agentic-checkouts/packs/${id} → request body`, input);
-  const res = await fetch(`${PACKS_BASE}/${id}`, {
+/**
+ * Fetch one keyset-paginated page of buyer profiles. `limit` defaults to 20
+ * (max 100); pass the previous page's `nextCursor` to continue. See
+ * listAllBuyerProfiles to walk every page.
+ */
+export async function listBuyerProfiles(
+  jwt: string,
+  opts: { limit?: number; cursor?: string } = {},
+): Promise<BuyerProfilesPage> {
+  const params = new URLSearchParams();
+  if (opts.limit != null) params.set("limit", String(opts.limit));
+  if (opts.cursor) params.set("cursor", opts.cursor);
+  const query = params.toString();
+  const res = await fetch(`${BUYER_PROFILES_BASE}${query ? `?${query}` : ""}`, {
+    headers: authHeaders(jwt),
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`Failed to list buyer profiles (${res.status}): ${await readError(res)}`);
+  return (await res.json()) as BuyerProfilesPage;
+}
+
+/**
+ * Walk every page of buyer profiles, following `nextCursor` until it's null.
+ * The first call is sent bare (no query string) — same shape as the checkout
+ * `GET /:id` calls — and a query param is only added when a cursor exists, so
+ * we don't trip the list route's strict input validation on a fresh load.
+ */
+export async function listAllBuyerProfiles(jwt: string): Promise<BuyerProfile[]> {
+  const all: BuyerProfile[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await listBuyerProfiles(jwt, cursor ? { cursor } : {});
+    all.push(...page.data);
+    cursor = page.nextCursor ?? undefined;
+  } while (cursor);
+  return all;
+}
+
+/** Update a buyer profile. Send any subset of writable fields (empty patch → 400). */
+export async function updateBuyerProfile(
+  jwt: string,
+  id: string,
+  input: UpdateBuyerProfileInput,
+): Promise<BuyerProfile> {
+  log(`PATCH /agent-checkouts/buyer-profiles/${id} → request body`, input);
+  const res = await fetch(`${BUYER_PROFILES_BASE}/${id}`, {
     method: "PATCH",
     headers: authHeaders(jwt),
     body: JSON.stringify(input),
     cache: "no-store",
   });
-  if (!res.ok) throw new Error(`Failed to update pack (${res.status}): ${await readError(res)}`);
-  const data: PackManifest = await res.json();
-  log(`PATCH /agentic-checkouts/packs/${id} → response`, data);
+  if (!res.ok) throw new Error(`Failed to update buyer profile (${res.status}): ${await readError(res)}`);
+  const data: BuyerProfile = await res.json();
+  log(`PATCH /agent-checkouts/buyer-profiles/${id} → response`, data);
   return data;
 }
 
-/** Delete a pack. Returns 204 — already-running checkouts keep their provenance. */
-export async function deletePack(jwt: string, id: string): Promise<void> {
-  log("DELETE /agentic-checkouts/packs/:id → request", { id });
-  const res = await fetch(`${PACKS_BASE}/${id}`, {
+/** Delete a buyer profile. Returns 204 No Content. */
+export async function deleteBuyerProfile(jwt: string, id: string): Promise<void> {
+  log("DELETE /agent-checkouts/buyer-profiles/:id → request", { id });
+  const res = await fetch(`${BUYER_PROFILES_BASE}/${id}`, {
     method: "DELETE",
     headers: authHeaders(jwt),
     cache: "no-store",
   });
-  if (!res.ok) throw new Error(`Failed to delete pack (${res.status}): ${await readError(res)}`);
-  log("DELETE /agentic-checkouts/packs/:id → accepted", { id, status: res.status });
+  if (!res.ok) throw new Error(`Failed to delete buyer profile (${res.status}): ${await readError(res)}`);
+  log("DELETE /agent-checkouts/buyer-profiles/:id → accepted", { id, status: res.status });
 }
