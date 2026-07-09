@@ -5,7 +5,7 @@
 <h1>Agent Checkouts Quickstart</h1>
 
 <div align="center">
-<a href="https://docs.crossmint.com/agents/overview">Docs</a> | <a href="https://www.crossmint.com/quickstarts">See all quickstarts</a>
+<a href="https://docs.crossmint.com/agents/overview">Docs</a> | <a href="https://agent-checkouts.demos-crossmint.com">Live demo</a> | <a href="https://www.crossmint.com/quickstarts">See all quickstarts</a>
 </div>
 
 <br>
@@ -69,7 +69,7 @@ Profile endpoints live under `…/agent-checkouts/buyer-profiles` (`lib/agent-ch
 
 1. Clone the repository and navigate to the project folder:
 ```bash
-git clone https://github.com/Crossmint/agentic-checkout-quickstart.git && cd agentic-checkout-quickstart
+git clone https://github.com/Crossmint/agent-checkout-quickstart.git && cd agent-checkout-quickstart
 ```
 
 2. Install dependencies:
