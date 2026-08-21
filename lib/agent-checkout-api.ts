@@ -17,17 +17,22 @@ import {
   buildCreateCheckoutBody,
   buildCreateBuyerProfileBody,
   type ActionAck,
+  type BrowserProfile,
+  type BrowserProfilesResponse,
   type BuyerProfile,
   type BuyerProfilesPage,
   type CheckoutView,
+  type CreateBrowserProfileInput,
   type CreateBuyerProfileInput,
   type CreateCheckoutInput,
+  type UpdateBrowserProfileInput,
   type UpdateBuyerProfileInput,
 } from "@/lib/agent-checkout-types";
 
 const BASE_URL = (process.env.NEXT_PUBLIC_CROSSMINT_BASE_URL ?? "http://localhost:3000").replace(/\/$/, "");
 const API_BASE = `${BASE_URL}/api/unstable/agent-checkouts`;
 const BUYER_PROFILES_BASE = `${API_BASE}/buyer-profiles`;
+const BROWSER_PROFILES_BASE = `${API_BASE}/browser-profiles`;
 const API_KEY = process.env.NEXT_PUBLIC_CROSSMINT_API_KEY ?? "";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -290,4 +295,105 @@ export async function deleteBuyerProfile(jwt: string, id: string): Promise<void>
   });
   if (!res.ok) throw new Error(`Failed to delete buyer profile (${res.status}): ${await readError(res)}`);
   log("DELETE /agent-checkouts/buyer-profiles/:id → accepted", { id, status: res.status });
+}
+
+// ─── Browser profiles ───────────────────────────────────────────────────────
+//
+// A browser profile is a durable browser identity for the signed-in user: the
+// merchant logins captured by one run are already signed in on the next.
+// Attach it to a checkout by passing its id as `browserProfileId`. Every
+// endpoint returns metadata only — the saved browser state itself is held by
+// Crossmint's browser infrastructure and never comes back over the API.
+//
+// A user holds at most one profile, so the list endpoint is unpaginated (no
+// cursor walking) and create answers 409 once one exists.
+//
+//   createBrowserProfile  POST   /browser-profiles       → 201  the profile (409 if one exists)
+//   getBrowserProfile     GET    /browser-profiles/:id   → 200  (404 if not owned)
+//   listBrowserProfiles   GET    /browser-profiles       → 200  { data }
+//   updateBrowserProfile  PATCH  /browser-profiles/:id   → 200  the renamed profile
+//   deleteBrowserProfile  DELETE /browser-profiles/:id   → 204  erases the saved state
+
+/** Thrown when create is called for a user who already holds a profile (409). */
+export class BrowserProfileExistsError extends Error {
+  constructor() {
+    super("This user already has a browser profile");
+    this.name = "BrowserProfileExistsError";
+  }
+}
+
+/** Create the user's browser profile. Throws BrowserProfileExistsError on a 409. */
+export async function createBrowserProfile(
+  jwt: string,
+  input: CreateBrowserProfileInput = {},
+): Promise<BrowserProfile> {
+  const body = input.label ? { label: input.label } : {};
+  log("POST /agent-checkouts/browser-profiles → request body", body);
+  const res = await fetch(BROWSER_PROFILES_BASE, {
+    method: "POST",
+    headers: authHeaders(jwt),
+    body: JSON.stringify(body),
+    cache: "no-store",
+  });
+  if (res.status === 409) throw new BrowserProfileExistsError();
+  if (!res.ok) throw new Error(`Failed to create browser profile (${res.status}): ${await readError(res)}`);
+  const data: BrowserProfile = await res.json();
+  log("POST /agent-checkouts/browser-profiles → response", data);
+  return data;
+}
+
+/** Fetch a single browser profile. A profile owned by anyone else is a 404. */
+export async function getBrowserProfile(jwt: string, id: string): Promise<BrowserProfile> {
+  const res = await fetch(`${BROWSER_PROFILES_BASE}/${id}`, {
+    headers: authHeaders(jwt),
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`Failed to fetch browser profile (${res.status}): ${await readError(res)}`);
+  return (await res.json()) as BrowserProfile;
+}
+
+/** The user's browser profile, or null when they don't have one yet. */
+export async function findBrowserProfile(jwt: string): Promise<BrowserProfile | null> {
+  const res = await fetch(BROWSER_PROFILES_BASE, {
+    headers: authHeaders(jwt),
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`Failed to list browser profiles (${res.status}): ${await readError(res)}`);
+  const page = (await res.json()) as BrowserProfilesResponse;
+  return page.data[0] ?? null;
+}
+
+/** Rename a browser profile. The label is the only editable field. */
+export async function updateBrowserProfile(
+  jwt: string,
+  id: string,
+  input: UpdateBrowserProfileInput,
+): Promise<BrowserProfile> {
+  log(`PATCH /agent-checkouts/browser-profiles/${id} → request body`, input);
+  const res = await fetch(`${BROWSER_PROFILES_BASE}/${id}`, {
+    method: "PATCH",
+    headers: authHeaders(jwt),
+    body: JSON.stringify(input),
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`Failed to update browser profile (${res.status}): ${await readError(res)}`);
+  const data: BrowserProfile = await res.json();
+  log(`PATCH /agent-checkouts/browser-profiles/${id} → response`, data);
+  return data;
+}
+
+/**
+ * Delete a browser profile. This erases the stored browser state, not just
+ * Crossmint's record of it, so every saved merchant login is gone. Runs already
+ * using the profile finish first; erasure completes once they end.
+ */
+export async function deleteBrowserProfile(jwt: string, id: string): Promise<void> {
+  log("DELETE /agent-checkouts/browser-profiles/:id → request", { id });
+  const res = await fetch(`${BROWSER_PROFILES_BASE}/${id}`, {
+    method: "DELETE",
+    headers: authHeaders(jwt),
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`Failed to delete browser profile (${res.status}): ${await readError(res)}`);
+  log("DELETE /agent-checkouts/browser-profiles/:id → accepted", { id, status: res.status });
 }

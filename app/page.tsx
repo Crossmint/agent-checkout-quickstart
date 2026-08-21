@@ -11,12 +11,14 @@ import {
   cancelCheckout,
   resolveEmbedUrl,
   listAllBuyerProfiles,
+  findBrowserProfile,
 } from "@/lib/agent-checkout-api";
 import { LoginScreen } from "@/components/login-screen";
 import {
   buildCreateCheckoutBody,
   isTerminal,
   type ApiCall,
+  type BrowserProfile,
   type BuyerProfile,
   type CheckoutView,
   type CreateCheckoutInput,
@@ -31,6 +33,7 @@ import { Footer } from "@/components/footer";
 import { ViewSwitch, type ViewMode } from "@/components/view-switch";
 import { ApiLogView } from "@/components/api-log-view";
 import { BuyerProfilesView } from "@/components/buyer-profiles-view";
+import { BrowserProfileCard } from "@/components/browser-profile-card";
 import { Stepper, type Step } from "@/components/stepper";
 import { ElapsedTimer } from "@/components/elapsed-timer";
 
@@ -68,6 +71,19 @@ function CheckoutApp() {
   const [profiles, setProfiles] = useState<BuyerProfile[]>([]);
   const [profilesLoading, setProfilesLoading] = useState(true);
 
+  // The user's browser profile (at most one), and whether this checkout should
+  // run inside it. Reuse is the point of the profile, so it's on by default.
+  const [browserProfile, setBrowserProfile] = useState<BrowserProfile | null>(null);
+  const [browserProfileLoading, setBrowserProfileLoading] = useState(true);
+  const [attachBrowserProfile, setAttachBrowserProfile] = useState(true);
+
+  // Step 1's own "Code" log, shared by both profile cards.
+  const [setupView, setSetupView] = useState<ViewMode>("ui");
+  const [setupLog, setSetupLog] = useState<ApiCall[]>([]);
+  const logSetupCall = useCallback((call: Omit<ApiCall, "at">) => {
+    setSetupLog((prev) => [...prev, { ...call, at: new Date().toLocaleTimeString() }]);
+  }, []);
+
   // The stored selection, validated against the current list and defaulting to
   // the first profile. Derived (not stored) so a deleted/absent selection
   // self-heals without an effect.
@@ -87,6 +103,23 @@ function CheckoutApp() {
         console.error("Failed to load buyer profiles:", err);
       } finally {
         if (!cancelled) setProfilesLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [getJwt]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const loaded = await findBrowserProfile(getJwt());
+        if (!cancelled) setBrowserProfile(loaded);
+      } catch (err) {
+        console.error("Failed to load browser profile:", err);
+      } finally {
+        if (!cancelled) setBrowserProfileLoading(false);
       }
     })();
     return () => {
@@ -188,9 +221,10 @@ function CheckoutApp() {
         maxCostAmount: HIGH_MAX_COST.amount,
         maxCostCurrency: HIGH_MAX_COST.currency,
         buyerProfileId: effectiveSelectedId ?? undefined,
+        browserProfileId: attachBrowserProfile ? (browserProfile?.id ?? undefined) : undefined,
       });
     },
-    [handleCreate, effectiveSelectedId],
+    [handleCreate, effectiveSelectedId, attachBrowserProfile, browserProfile],
   );
 
   const handleSubmitAction = useCallback(
@@ -349,7 +383,25 @@ function CheckoutApp() {
               selectable
               selectedId={effectiveSelectedId}
               onSelect={setSelectedProfileId}
+              viewMode={setupView}
+              onViewMode={setSetupView}
+              apiLog={setupLog}
+              logCall={logSetupCall}
             />
+            {setupView === "ui" && (
+              <div className="mx-auto max-w-[680px]">
+                <BrowserProfileCard
+                  getJwt={getJwt}
+                  profile={browserProfile}
+                  loading={browserProfileLoading}
+                  enabled={attachBrowserProfile}
+                  onToggle={setAttachBrowserProfile}
+                  onLoaded={setBrowserProfile}
+                  onDeleted={() => setBrowserProfile(null)}
+                  logCall={logSetupCall}
+                />
+              </div>
+            )}
             <div className="mx-auto mt-5 flex max-w-[680px] justify-end">
               <button
                 onClick={() => setStep("buy")}
@@ -375,6 +427,9 @@ function CheckoutApp() {
                     Shipping to{" "}
                     <span className="font-medium text-[#00150d]/80">{selectedProfileName}</span>.
                   </>
+                )}
+                {attachBrowserProfile && browserProfile && (
+                  <> Running in your saved browser profile, so merchant logins carry over.</>
                 )}
               </p>
               <CheckoutForm
