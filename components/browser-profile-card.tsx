@@ -57,11 +57,24 @@ export function BrowserProfileCard({
     } catch (err) {
       if (err instanceof BrowserProfileExistsError) {
         // Another tab (or an earlier run of this demo) already created it —
-        // adopt that one instead of surfacing a conflict.
-        const existing = await findBrowserProfile(getJwt());
-        logCall({ method: "GET", path: BROWSER_PROFILES_PATH, response: { data: existing ? [existing] : [] } });
-        if (existing) {
-          onLoaded(existing);
+        // adopt that one instead of surfacing a conflict. The lookup can fail
+        // in its own right (e.g. a key with create but not read scope), so it
+        // falls through to the error below rather than rejecting unhandled.
+        try {
+          const existing = await findBrowserProfile(getJwt());
+          logCall({ method: "GET", path: BROWSER_PROFILES_PATH, response: { data: existing ? [existing] : [] } });
+          if (existing) {
+            onLoaded(existing);
+            return;
+          }
+          setError("This user already has a browser profile, but it couldn't be loaded");
+          return;
+        } catch (lookupErr) {
+          setError(
+            lookupErr instanceof Error
+              ? lookupErr.message
+              : "This user already has a browser profile, but it couldn't be loaded",
+          );
           return;
         }
       }

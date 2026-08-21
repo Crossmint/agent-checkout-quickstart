@@ -405,7 +405,7 @@ function CheckoutApp() {
             <div className="mx-auto mt-5 flex max-w-[680px] justify-end">
               <button
                 onClick={() => setStep("buy")}
-                disabled={!effectiveSelectedId}
+                disabled={!effectiveSelectedId || browserProfileLoading}
                 className="flex items-center gap-1.5 rounded-[8px] bg-[#05B959] px-5 py-2.5 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40"
               >
                 Continue <ArrowRight className="size-4" />
