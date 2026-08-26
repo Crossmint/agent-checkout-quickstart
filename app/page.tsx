@@ -232,6 +232,7 @@ function CheckoutApp() {
       if (!checkout?.pendingUserAction) return;
       const aid = checkout.pendingUserAction.id;
       setActionBusy(true);
+      setError(null);
       try {
         const ack = await submitAction(getJwt(), checkout.id, aid, values);
         logCall({
@@ -244,6 +245,7 @@ function CheckoutApp() {
         // Refresh immediately so the UI moves on without waiting for the next tick.
         setCheckout(await getCheckout(getJwt(), checkout.id));
       } catch (err) {
+        console.error("Submit action failed:", err);
         setError(err instanceof Error ? err.message : "Failed to submit action");
       } finally {
         setActionBusy(false);
@@ -257,6 +259,7 @@ function CheckoutApp() {
       if (!checkout?.pendingUserAction) return;
       const aid = checkout.pendingUserAction.id;
       setActionBusy(true);
+      setError(null);
       try {
         const ack = await declineAction(getJwt(), checkout.id, aid, reason);
         logCall({
@@ -268,6 +271,7 @@ function CheckoutApp() {
         setRespondedActionId(aid);
         setCheckout(await getCheckout(getJwt(), checkout.id));
       } catch (err) {
+        console.error("Decline action failed:", err);
         setError(err instanceof Error ? err.message : "Failed to decline action");
       } finally {
         setActionBusy(false);
@@ -279,11 +283,13 @@ function CheckoutApp() {
   const handleCancel = useCallback(async () => {
     if (!checkout) return;
     setCancelling(true);
+    setError(null);
     try {
       await cancelCheckout(getJwt(), checkout.id);
       logCall({ method: "DELETE", path: `${BASE_PATH}/${checkout.id}` });
       setCheckout(await getCheckout(getJwt(), checkout.id));
     } catch (err) {
+      console.error("Cancel checkout failed:", err);
       setError(err instanceof Error ? err.message : "Failed to cancel checkout");
     } finally {
       setCancelling(false);
@@ -494,6 +500,24 @@ function CheckoutApp() {
                   </p>
                   <p className="mt-1 text-sm text-[#00150d]">“{checkout.target.request}”</p>
                   <p className="mt-1 font-mono text-[11px] text-[#00150d]/30">{checkout.id}</p>
+                </div>
+              )}
+
+              {/* Failed submit/decline/cancel calls land here. Rendered outside
+                  the video wrapper so it stays visible under the action modal. */}
+              {error && (
+                <div
+                  role="alert"
+                  className="animate-fade-in flex items-start justify-between gap-3 rounded-[8px] border border-red-200 bg-red-50 px-4 py-3"
+                >
+                  <p className="min-w-0 break-words text-sm text-red-700">{error}</p>
+                  <button
+                    onClick={() => setError(null)}
+                    aria-label="Dismiss error"
+                    className="shrink-0 text-red-400 transition-colors hover:text-red-600"
+                  >
+                    <X className="size-3.5" />
+                  </button>
                 </div>
               )}
 
