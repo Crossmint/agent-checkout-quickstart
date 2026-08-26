@@ -11,12 +11,14 @@ import {
   cancelCheckout,
   resolveEmbedUrl,
   listAllBuyerProfiles,
+  findBrowserProfile,
 } from "@/lib/agent-checkout-api";
 import { LoginScreen } from "@/components/login-screen";
 import {
   buildCreateCheckoutBody,
   isTerminal,
   type ApiCall,
+  type BrowserProfile,
   type BuyerProfile,
   type CheckoutView,
   type CreateCheckoutInput,
@@ -31,6 +33,7 @@ import { Footer } from "@/components/footer";
 import { ViewSwitch, type ViewMode } from "@/components/view-switch";
 import { ApiLogView } from "@/components/api-log-view";
 import { BuyerProfilesView } from "@/components/buyer-profiles-view";
+import { BrowserProfileCard } from "@/components/browser-profile-card";
 import { Stepper, type Step } from "@/components/stepper";
 import { ElapsedTimer } from "@/components/elapsed-timer";
 
@@ -68,6 +71,19 @@ function CheckoutApp() {
   const [profiles, setProfiles] = useState<BuyerProfile[]>([]);
   const [profilesLoading, setProfilesLoading] = useState(true);
 
+  // The user's browser profile (at most one), and whether this checkout should
+  // run inside it. Reuse is the point of the profile, so it's on by default.
+  const [browserProfile, setBrowserProfile] = useState<BrowserProfile | null>(null);
+  const [browserProfileLoading, setBrowserProfileLoading] = useState(true);
+  const [attachBrowserProfile, setAttachBrowserProfile] = useState(true);
+
+  // Step 1's own "Code" log, shared by both profile cards.
+  const [setupView, setSetupView] = useState<ViewMode>("ui");
+  const [setupLog, setSetupLog] = useState<ApiCall[]>([]);
+  const logSetupCall = useCallback((call: Omit<ApiCall, "at">) => {
+    setSetupLog((prev) => [...prev, { ...call, at: new Date().toLocaleTimeString() }]);
+  }, []);
+
   // The stored selection, validated against the current list and defaulting to
   // the first profile. Derived (not stored) so a deleted/absent selection
   // self-heals without an effect.
@@ -87,6 +103,23 @@ function CheckoutApp() {
         console.error("Failed to load buyer profiles:", err);
       } finally {
         if (!cancelled) setProfilesLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [getJwt]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const loaded = await findBrowserProfile(getJwt());
+        if (!cancelled) setBrowserProfile(loaded);
+      } catch (err) {
+        console.error("Failed to load browser profile:", err);
+      } finally {
+        if (!cancelled) setBrowserProfileLoading(false);
       }
     })();
     return () => {
@@ -188,9 +221,10 @@ function CheckoutApp() {
         maxCostAmount: HIGH_MAX_COST.amount,
         maxCostCurrency: HIGH_MAX_COST.currency,
         buyerProfileId: effectiveSelectedId ?? undefined,
+        browserProfileId: attachBrowserProfile ? (browserProfile?.id ?? undefined) : undefined,
       });
     },
-    [handleCreate, effectiveSelectedId],
+    [handleCreate, effectiveSelectedId, attachBrowserProfile, browserProfile],
   );
 
   const handleSubmitAction = useCallback(
@@ -198,6 +232,7 @@ function CheckoutApp() {
       if (!checkout?.pendingUserAction) return;
       const aid = checkout.pendingUserAction.id;
       setActionBusy(true);
+      setError(null);
       try {
         const ack = await submitAction(getJwt(), checkout.id, aid, values);
         logCall({
@@ -210,6 +245,7 @@ function CheckoutApp() {
         // Refresh immediately so the UI moves on without waiting for the next tick.
         setCheckout(await getCheckout(getJwt(), checkout.id));
       } catch (err) {
+        console.error("Submit action failed:", err);
         setError(err instanceof Error ? err.message : "Failed to submit action");
       } finally {
         setActionBusy(false);
@@ -223,6 +259,7 @@ function CheckoutApp() {
       if (!checkout?.pendingUserAction) return;
       const aid = checkout.pendingUserAction.id;
       setActionBusy(true);
+      setError(null);
       try {
         const ack = await declineAction(getJwt(), checkout.id, aid, reason);
         logCall({
@@ -234,6 +271,7 @@ function CheckoutApp() {
         setRespondedActionId(aid);
         setCheckout(await getCheckout(getJwt(), checkout.id));
       } catch (err) {
+        console.error("Decline action failed:", err);
         setError(err instanceof Error ? err.message : "Failed to decline action");
       } finally {
         setActionBusy(false);
@@ -245,11 +283,13 @@ function CheckoutApp() {
   const handleCancel = useCallback(async () => {
     if (!checkout) return;
     setCancelling(true);
+    setError(null);
     try {
       await cancelCheckout(getJwt(), checkout.id);
       logCall({ method: "DELETE", path: `${BASE_PATH}/${checkout.id}` });
       setCheckout(await getCheckout(getJwt(), checkout.id));
     } catch (err) {
+      console.error("Cancel checkout failed:", err);
       setError(err instanceof Error ? err.message : "Failed to cancel checkout");
     } finally {
       setCancelling(false);
@@ -349,11 +389,29 @@ function CheckoutApp() {
               selectable
               selectedId={effectiveSelectedId}
               onSelect={setSelectedProfileId}
+              viewMode={setupView}
+              onViewMode={setSetupView}
+              apiLog={setupLog}
+              logCall={logSetupCall}
             />
+            {setupView === "ui" && (
+              <div className="mx-auto max-w-[680px]">
+                <BrowserProfileCard
+                  getJwt={getJwt}
+                  profile={browserProfile}
+                  loading={browserProfileLoading}
+                  enabled={attachBrowserProfile}
+                  onToggle={setAttachBrowserProfile}
+                  onLoaded={setBrowserProfile}
+                  onDeleted={() => setBrowserProfile(null)}
+                  logCall={logSetupCall}
+                />
+              </div>
+            )}
             <div className="mx-auto mt-5 flex max-w-[680px] justify-end">
               <button
                 onClick={() => setStep("buy")}
-                disabled={!effectiveSelectedId}
+                disabled={!effectiveSelectedId || browserProfileLoading}
                 className="flex items-center gap-1.5 rounded-[8px] bg-[#05B959] px-5 py-2.5 text-sm font-medium text-white transition-opacity hover:opacity-90 disabled:opacity-40"
               >
                 Continue <ArrowRight className="size-4" />
@@ -375,6 +433,9 @@ function CheckoutApp() {
                     Shipping to{" "}
                     <span className="font-medium text-[#00150d]/80">{selectedProfileName}</span>.
                   </>
+                )}
+                {attachBrowserProfile && browserProfile && (
+                  <> Running in your saved browser profile, so merchant logins carry over.</>
                 )}
               </p>
               <CheckoutForm
@@ -439,6 +500,24 @@ function CheckoutApp() {
                   </p>
                   <p className="mt-1 text-sm text-[#00150d]">“{checkout.target.request}”</p>
                   <p className="mt-1 font-mono text-[11px] text-[#00150d]/30">{checkout.id}</p>
+                </div>
+              )}
+
+              {/* Failed submit/decline/cancel calls land here. Rendered outside
+                  the video wrapper so it stays visible under the action modal. */}
+              {error && (
+                <div
+                  role="alert"
+                  className="animate-fade-in flex items-start justify-between gap-3 rounded-[8px] border border-red-200 bg-red-50 px-4 py-3"
+                >
+                  <p className="min-w-0 break-words text-sm text-red-700">{error}</p>
+                  <button
+                    onClick={() => setError(null)}
+                    aria-label="Dismiss error"
+                    className="shrink-0 text-red-400 transition-colors hover:text-red-600"
+                  >
+                    <X className="size-3.5" />
+                  </button>
                 </div>
               )}
 

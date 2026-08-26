@@ -38,6 +38,12 @@ export function BuyerProfilesView({
   selectable = false,
   selectedId = null,
   onSelect,
+  // The "Code" log is shared with the rest of the step, so the switch and the
+  // log itself live with whoever owns the step.
+  viewMode,
+  onViewMode,
+  apiLog,
+  logCall,
 }: {
   getJwt: () => string;
   profiles: BuyerProfile[];
@@ -48,19 +54,17 @@ export function BuyerProfilesView({
   selectable?: boolean;
   selectedId?: string | null;
   onSelect?: (id: string) => void;
+  viewMode: ViewMode;
+  onViewMode: (view: ViewMode) => void;
+  apiLog: ApiCall[];
+  logCall: (call: Omit<ApiCall, "at">) => void;
 }) {
-  const [viewMode, setViewMode] = useState<ViewMode>("ui");
   const [showForm, setShowForm] = useState(false);
   // The profile being edited, or null when the form (if shown) is creating a new one.
   const [editing, setEditing] = useState<BuyerProfile | null>(null);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
-
-  const [apiLog, setApiLog] = useState<ApiCall[]>([]);
-  const logCall = useCallback((call: Omit<ApiCall, "at">) => {
-    setApiLog((prev) => [...prev, { ...call, at: new Date().toLocaleTimeString() }]);
-  }, []);
 
   const closeForm = useCallback(() => {
     setShowForm(false);
@@ -153,7 +157,7 @@ export function BuyerProfilesView({
             )}
           </p>
         </div>
-        <ViewSwitch view={viewMode} onChange={setViewMode} />
+        <ViewSwitch view={viewMode} onChange={onViewMode} />
       </div>
 
       {viewMode === "code" ? (

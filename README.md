@@ -18,7 +18,7 @@ Hand an agent a product URL and an instruction and let it check out for you. Thi
 
 The app walks you through **three steps**:
 
-1. **Buyer profile** — pick (or create) a reusable set of buyer details: name, contact, and shipping. The agent uses it so it doesn't have to ask.
+1. **Profiles** — pick (or create) a **buyer profile**: a reusable set of buyer details (name, contact, shipping) the agent uses so it doesn't have to ask. Optionally create a **browser profile** too, so merchant logins survive from one checkout to the next.
 2. **What to buy** — paste a product URL and write a buyer request. The more you specify up front (size, payment method, delivery option, billing address), the fewer questions the agent stops to ask. You set the payment _method_ here (e.g. "pay by card"), but not the card details — the agent asks for those during checkout.
 3. **Checkout** — watch the live browser session with the instruction and an elapsed timer, enter card details when the agent prompts for them (a warning explains what's safe to paste), answer any other prompts, and cancel any time.
 
@@ -29,6 +29,7 @@ The app walks you through **three steps**:
 - Render a form dynamically from each pending action's JSON Schema — never hardcoding fields
 - Submit or decline user actions, and read the final receipt or failure reason
 - Save reusable **buyer profiles** (name, contact, shipping) and attach one to a checkout with `buyerProfileId`
+- Reuse a merchant login across runs with a **browser profile**, attached with `browserProfileId`
 
 ## How it works
 
@@ -61,6 +62,24 @@ Profile endpoints live under `…/agent-checkouts/buyer-profiles` (`lib/agent-ch
 
 `shipping.countryCode` (ISO 3166-1 alpha-2) is required. `shipping.administrativeAreaCode` is ISO 3166-2, prefixed with the country code — e.g. `US-CA`. The **State / region** input accepts a bare code (`CA`) or a prefixed one (`US-CA`) and normalizes to the prefixed form; a full name like `Florida` is passed through as typed (the API validates it). Pass a profile's id as `buyerProfileId` on `POST /agent-checkouts` to attach it. **Step 1** of the flow lists your profiles (from the list endpoint — no `localStorage` needed), lets you create/edit/delete them, and select the one to carry into the checkout.
 
+## Browser profiles
+
+A **browser profile** is a durable browser identity for the signed-in user. Some merchants require an account, and without a profile every run starts from a signed-out browser: the agent stops, the user signs in, and the next run asks again. With one attached, the logins captured by earlier runs are already there.
+
+Profile endpoints live under `…/agent-checkouts/browser-profiles` (`lib/agent-checkout-api.ts`):
+
+| Call | Result |
+| --- | --- |
+| `POST /browser-profiles` | `201` — the profile (`409` once the user has one). |
+| `GET /browser-profiles/:id` | `200` — one profile (`404` if not owned). |
+| `GET /browser-profiles` | `200` — `{ data }`; never paginated, since a user holds at most one. |
+| `PATCH /browser-profiles/:id` | `200` — renames it; `label` is the only editable field. |
+| `DELETE /browser-profiles/:id` | `204` — erases the saved browser state, not just the record. |
+
+Pass a profile's id as `browserProfileId` on `POST /agent-checkouts` to run inside it. A new profile is empty, so the first checkout still asks the user to sign in — they do it in the embedded browser — and later ones skip it.
+
+Every response is **metadata only**: an id, your label, and timestamps (`updatedAt` tracks label edits, not runs). The saved browser state is held by Crossmint's browser infrastructure as an opaque blob, never read by Crossmint and never included in a model prompt, and no cookie or token comes back over the API. Deleting is irreversible: it erases the state itself, and runs already using the profile finish before erasure completes.
+
 **Auth:** every call runs in the browser and sends two things — your **client-side** Crossmint key (`X-API-KEY: ck_...`) and the signed-in user's **Stytch session JWT** (`Authorization: Bearer ...`). The `ck_` key alone returns `401`; checkouts are always made on behalf of an authenticated user.
 
 > **Use production/live credentials — not test.** This quickstart runs against Crossmint **production** (`https://www.crossmint.com`), which validates the session JWT against the **live** Stytch project's JWKS. A **test** Stytch token (`public-token-test-...`) mints a JWT signed by a key production doesn't trust, and every call fails with `401 ... Couldn't find a JWT signing key in the JWKS for kid jwk-test-... (ERROR_JWT_INVALID)`. The `ck_` key must be `ck_production_...` and the Stytch token `public-token-live-...` — the two must come from the **same environment**.
@@ -91,6 +110,7 @@ NEXT_PUBLIC_STYTCH_PUBLIC_TOKEN=public-token-live-...
 
 # Crossmint CLIENT production key with scopes: agent-checkouts.create | read | update | cancel.
 # For buyer profiles (step 1), also add: agent-checkouts.buyer-profiles.create | read | update | delete.
+# For browser profiles (step 1), also add: agent-checkouts.browser-profiles.create | read | update | delete.
 # Public by design — restrict it with allowed-origins in the Crossmint console.
 NEXT_PUBLIC_CROSSMINT_API_KEY=ck_production_...
 
@@ -124,5 +144,6 @@ Open [http://localhost:3000](http://localhost:3000) (or whichever port Next pick
 - **Poll, don't push.** v1 has no webhooks; a ~1.5s poll on `GET /:id` driving a state machine is the intended pattern (`app/page.tsx`).
 - **Forms are schema-driven.** `pendingUserAction.responseSchema` is arbitrary JSON Schema per action — `components/action-form.tsx` renders it dynamically.
 - **Buyer profiles hold no payment.** They store name, contact, and shipping only — payment is still collected per checkout via the pending payment action.
-- **Buyer-profile scopes are separate.** Creating/listing profiles needs the `agent-checkouts.buyer-profiles.*` scopes on your `ck_` key, in addition to the checkout scopes. Without them step 1's profile calls return `403`.
+- **Profile scopes are separate.** Creating/listing profiles needs the `agent-checkouts.buyer-profiles.*` and `agent-checkouts.browser-profiles.*` scopes on your `ck_` key, in addition to the checkout scopes. Without them step 1's profile calls return `403`.
+- **A browser profile is real account access.** It holds live merchant sessions, which is why the API exposes metadata only and why deleting erases the stored state rather than just the record.
 - **Production only — test tokens 401.** All credentials must be from the **live/production** environment. Mixing a **test** Stytch token with production Crossmint yields `401 ... Couldn't find a JWT signing key in the JWKS for kid jwk-test-... (ERROR_JWT_INVALID)`. Fix: swap in the `public-token-live-...` token from the Stytch project tied to your Crossmint production account and restart the dev server (`NEXT_PUBLIC_*` vars are inlined at build time).

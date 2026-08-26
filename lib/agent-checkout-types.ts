@@ -115,6 +115,31 @@ export type BuyerProfilesPage = {
   nextCursor: string | null;
 };
 
+// ─── Browser profiles ──────────────────────────────────────────────────────
+// A browser profile is a durable browser identity for the signed-in user: the
+// merchant logins it accumulates are reused across runs, so the user signs in
+// once instead of on every checkout. Attach it by passing its id as
+// `browserProfileId`. The API exposes metadata only — the saved browser state
+// itself never comes back through it.
+
+/** The read model returned by every browser-profile endpoint. */
+export type BrowserProfile = {
+  id: string;
+  label?: string;
+  createdAt: string;
+  // When the label was last changed; checkout runs don't touch it.
+  updatedAt: string;
+};
+
+/** Body for POST /agent-checkouts/browser-profiles — `label` is the only field. */
+export type CreateBrowserProfileInput = { label?: string };
+
+/** Body for PATCH /agent-checkouts/browser-profiles/:id — the label is the only editable field. */
+export type UpdateBrowserProfileInput = { label: string };
+
+/** GET /agent-checkouts/browser-profiles. Unpaginated: a user holds at most one profile. */
+export type BrowserProfilesResponse = { data: BrowserProfile[] };
+
 export type Receipt = {
   total?: Money | string;
   capturedAt?: string;
@@ -182,6 +207,8 @@ export type CreateCheckoutInput = {
   orderRef?: string;
   // Optional saved buyer profile whose name/contact/shipping the agent should use.
   buyerProfileId?: string;
+  // Optional browser profile whose saved merchant logins the run should reuse.
+  browserProfileId?: string;
 };
 
 /**
@@ -200,6 +227,9 @@ export function buildCreateCheckoutBody(input: CreateCheckoutInput) {
     // Optional: attach a saved buyer profile by id so the agent reuses the
     // buyer's name/contact/shipping instead of asking for them.
     ...(input.buyerProfileId ? { buyerProfileId: input.buyerProfileId } : {}),
+    // Optional: run inside the user's saved browser identity, so merchant
+    // logins captured by earlier runs are already there.
+    ...(input.browserProfileId ? { browserProfileId: input.browserProfileId } : {}),
     // constraints.maxCost is required by the API. Collected from the form's
     // "Max cost" + "Currency" fields; the defaults are a fallback only.
     constraints: {

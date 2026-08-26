@@ -5,7 +5,7 @@ import { Check } from "lucide-react";
 export type Step = 1 | 2 | 3;
 
 const STEPS: { n: Step; label: string }[] = [
-  { n: 1, label: "Buyer profile" },
+  { n: 1, label: "Profiles" },
   { n: 2, label: "What to buy" },
   { n: 3, label: "Checkout" },
 ];
