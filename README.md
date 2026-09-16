@@ -24,25 +24,29 @@ The app walks you through **three steps**:
 
 **Learn how to:**
 - Create a checkout from a product URL + a natural-language instruction, attaching a saved buyer profile by `buyerProfileId`
-- Poll the checkout through its lifecycle: `queued → running → awaiting_user_action → succeeded | failed | cancelled`
+- Poll the checkout through its lifecycle: `queued → running → awaiting_input → succeeded | blocked | failed | cancelled`
 - Embed the live browser session the agent is driving
-- Render a form dynamically from each pending action's JSON Schema — never hardcoding fields
-- Submit or decline user actions, and read the final receipt or failure reason
+- Read the run's messages to show what the agent is doing
+- Render a form dynamically from each input request's JSON Schema — never hardcoding fields
+- Answer or decline input requests, and read the final purchase, blocked code, or failure reason
 - Save reusable **buyer profiles** (name, contact, shipping) and attach one to a checkout with `buyerProfileId`
 - Reuse a merchant login across runs with a **browser profile**, attached with `browserProfileId`
 
 ## How it works
 
-The app calls four endpoints under `${NEXT_PUBLIC_CROSSMINT_BASE_URL}/api/unstable/agent-checkouts` (`lib/agent-checkout-api.ts`):
+The app calls five endpoints under `${NEXT_PUBLIC_CROSSMINT_BASE_URL}/api/unstable/agent-checkouts` (`lib/agent-checkout-api.ts`):
 
 | Step | Call | Result |
 | --- | --- | --- |
-| 1. Create | `POST /` | `200` — full view, `status: "queued"`. Save `id`. |
-| 2. Poll | `GET /:id` | `200` — repeat every ~1.5s (no webhooks in v1). |
-| 3. Respond | `POST /:id/actions/:aid` | `202` — when `status === "awaiting_user_action"`. |
-| 4. Cancel | `DELETE /:id` | `202` — async; flips to `cancelled` on a later poll. |
+| 1. Create | `POST /` | `202` — run view, `status: "queued"`. Save `runId`. |
+| 2. Poll | `GET /:id` | `200` — repeat every ~1.5s (no webhooks). |
+| 2. Poll | `GET /:id/messages` | `200` — `{ data, nextCursor, streamCursor }`; what the agent did, asked, and concluded. |
+| 3. Respond | `POST /:id/messages` | `202` — an `input_response` part for `requiredAction.requestId`, when `status === "awaiting_input"`. |
+| 4. Cancel | `POST /:id/cancel` | `202` — async; flips to `cancelled` on a later poll. |
 
-Terminal states carry a `receipt` (`succeeded`) or a `failure` with a `reason` of `max_cost_exceeded | user_cancelled | user_action_expired | automation_failed` (`failed`).
+`GET /:id/messages/stream` delivers the same messages and run updates over SSE; this demo polls to keep the loop easy to read.
+
+Terminal runs carry a `result`: `succeeded` has a `purchase` (`receipt_captured` with a total and optional `merchantOrderId`, or `confirmed_without_receipt`); `blocked` has a `code` such as `policy.max_cost_exceeded`, `product.item_unavailable`, or `merchant.payment_declined`; `cancelled` has a `summary`. A `failed` run carries a top-level `reason` (`input_expired`, `browser_session_lost`, `runtime_error`, …) instead.
 
 `constraints.maxCost` is required by the API, but this demo doesn't ask for a budget — it sends a deliberately huge cap (`HIGH_MAX_COST` in `app/page.tsx`) so the agent is never blocked on cost. Add a real cost input if you want to enforce a budget.
 
@@ -72,7 +76,7 @@ Profile endpoints live under `…/agent-checkouts/browser-profiles` (`lib/agent-
 | --- | --- |
 | `POST /browser-profiles` | `201` — the profile (`409` once the user has one). |
 | `GET /browser-profiles/:id` | `200` — one profile (`404` if not owned). |
-| `GET /browser-profiles` | `200` — `{ data }`; never paginated, since a user holds at most one. |
+| `GET /browser-profiles` | `200` — `{ data, nextCursor }`; fits in one page, since a user holds at most one. |
 | `PATCH /browser-profiles/:id` | `200` — renames it; `label` is the only editable field. |
 | `DELETE /browser-profiles/:id` | `204` — erases the saved browser state, not just the record. |
 
@@ -141,9 +145,9 @@ Open [http://localhost:3000](http://localhost:3000) (or whichever port Next pick
 
 ## Notes & known gaps
 
-- **Poll, don't push.** v1 has no webhooks; a ~1.5s poll on `GET /:id` driving a state machine is the intended pattern (`app/page.tsx`).
-- **Forms are schema-driven.** `pendingUserAction.responseSchema` is arbitrary JSON Schema per action — `components/action-form.tsx` renders it dynamically.
-- **Buyer profiles hold no payment.** They store name, contact, and shipping only — payment is still collected per checkout via the pending payment action.
+- **Poll or stream, don't expect a push.** There are no webhooks; a ~1.5s poll on `GET /:id` + `GET /:id/messages` driving a state machine is the simplest pattern (`app/page.tsx`), and `GET /:id/messages/stream` is the SSE alternative.
+- **Forms are schema-driven.** `requiredAction.request.interaction.responseSchema` is arbitrary JSON Schema per input request — `components/action-form.tsx` renders it dynamically.
+- **Buyer profiles hold no payment.** They store name, contact, and shipping only — payment is still collected per checkout via an input request.
 - **Profile scopes are separate.** Creating/listing profiles needs the `agent-checkouts.buyer-profiles.*` and `agent-checkouts.browser-profiles.*` scopes on your `ck_` key, in addition to the checkout scopes. Without them step 1's profile calls return `403`.
 - **A browser profile is real account access.** It holds live merchant sessions, which is why the API exposes metadata only and why deleting erases the stored state rather than just the record.
 - **Production only — test tokens 401.** All credentials must be from the **live/production** environment. Mixing a **test** Stytch token with production Crossmint yields `401 ... Couldn't find a JWT signing key in the JWKS for kid jwk-test-... (ERROR_JWT_INVALID)`. Fix: swap in the `public-token-live-...` token from the Stytch project tied to your Crossmint production account and restart the dev server (`NEXT_PUBLIC_*` vars are inlined at build time).

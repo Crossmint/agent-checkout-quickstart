@@ -20,21 +20,21 @@ export function CheckoutForm({
   submitting,
   error,
 }: {
-  // Step 2 only collects the URL + instruction (+ optional merchant context).
+  // Step 2 only collects the URL + task (+ optional merchant guidance).
   // The buyer profile (step 1) and a very high max cost are added by the caller
   // when it creates the checkout.
-  onSubmit: (targetUrl: string, request: string, merchantContext: string) => void;
+  onSubmit: (startUrl: string, task: string, merchantGuidance: string) => void;
   onBack: () => void;
   submitting: boolean;
   error?: string | null;
 }) {
   const [targetUrl, setTargetUrl] = useState("");
   const [request, setRequest] = useState(EXAMPLE_REQUEST);
-  const [merchantContext, setMerchantContext] = useState("");
+  const [merchantGuidance, setMerchantGuidance] = useState("");
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    onSubmit(targetUrl, request, merchantContext);
+    onSubmit(targetUrl, request, merchantGuidance);
   };
 
   return (
@@ -85,10 +85,10 @@ export function CheckoutForm({
             steps, like briefing someone doing it for the first time.
           </p>
           <textarea
-            value={merchantContext}
-            onChange={(e) => setMerchantContext(e.target.value)}
+            value={merchantGuidance}
+            onChange={(e) => setMerchantGuidance(e.target.value)}
             rows={4}
-            maxLength={4000}
+            maxLength={20000}
             placeholder={
               "e.g. This is a medical bill portal — there is no cart.\n" +
               "Enter the account number in the 'Account #' field, then click 'Look up balance'.\n" +

@@ -2,18 +2,19 @@
 
 import { useMemo } from "react";
 import { Hand, AlertTriangle } from "lucide-react";
-import type { PendingUserAction } from "@/lib/agent-checkout-types";
+import type { FormValues, RequiredAction } from "@/lib/agent-checkout-types";
 import { JsonSchemaForm } from "@/components/json-schema-form";
 
 /**
- * Prompts the buyer for whatever a pending action needs. The fields are driven
- * entirely by the action's `responseSchema` — never hardcode them — and
+ * Prompts the buyer for whatever the run's `requiredAction` needs. The fields
+ * are driven entirely by the request's `interaction.responseSchema` — never
+ * hardcode them — and
  * rendered through {@link JsonSchemaForm}, an RJSF (`@rjsf/core` +
  * `@rjsf/validator-ajv8`) wrapper. Using RJSF means we render the schema
  * rather than maintain a second hand-written JSON Schema interpreter.
  *
- * Known gap (flagged): when a payment action appears, card data currently flows
- * in `values` as plaintext — the wire schema has no secret/payment semantics.
+ * Known gap (flagged): when a payment request appears, card data currently flows
+ * in `response.values` as plaintext — the wire schema has no secret/payment semantics.
  * Fine for a local demo; do not ship a real funding story on top of this.
  */
 export function ActionForm({
@@ -22,20 +23,20 @@ export function ActionForm({
   onDecline,
   submitting,
 }: {
-  action: PendingUserAction;
-  onSubmit: (values: Record<string, unknown>) => void;
-  onDecline: (reason: string) => void;
+  action: RequiredAction;
+  onSubmit: (values: FormValues) => void;
+  onDecline: () => void;
   submitting: boolean;
 }) {
-  const schema = useMemo(() => action.responseSchema ?? {}, [action]);
+  const schema = useMemo(() => action.request.interaction.responseSchema ?? {}, [action]);
 
   const looksLikePayment = useMemo(
     () => /pay|card|cvc|cvv|pan|credit/i.test(JSON.stringify(schema).toLowerCase()),
     [schema],
   );
 
-  const expiresLabel = action.expiresAt
-    ? new Date(action.expiresAt).toLocaleTimeString()
+  const expiresLabel = action.request.expiresAt
+    ? new Date(action.request.expiresAt).toLocaleTimeString()
     : null;
 
   return (
@@ -57,15 +58,15 @@ export function ActionForm({
         schema={schema}
         submitLabel="Submit"
         isSubmitting={submitting}
-        onSubmit={onSubmit}
-        secondary={{ label: "Decline", onClick: () => onDecline("changed my mind") }}
+        onSubmit={(values) => onSubmit(values as FormValues)}
+        secondary={{ label: "Decline", onClick: onDecline }}
         header={
           <div className="flex items-start gap-2.5">
             <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-[#b45309]/15">
               <Hand className="size-3.5 text-[#b45309]" />
             </span>
             <div>
-              <p className="text-sm font-medium text-[#00150d]">{action.message}</p>
+              <p className="text-sm font-medium text-[#00150d]">{action.request.question}</p>
               {expiresLabel && (
                 <p className="text-xs text-[#00150d]/45">Respond before {expiresLabel}</p>
               )}

@@ -2,23 +2,66 @@
 
 import { useEffect, useRef } from "react";
 import { Check, Hand } from "lucide-react";
-import type { ProgressItem } from "@/lib/agent-checkout-types";
+import type { CheckoutMessage, MessagePart } from "@/lib/agent-checkout-types";
 
-function itemLabel(item: ProgressItem): string {
-  return (
-    item.message ??
-    item.title ??
-    (typeof item["label"] === "string" ? (item["label"] as string) : null) ??
-    item.type ??
-    "Step"
-  );
+/** One row of the timeline, flattened from a message part. */
+export type TimelineItem = {
+  key: string;
+  label: string;
+  createdAt: string;
+  /** The agent asked the buyer for something (or the buyer answered). */
+  userAction: boolean;
+};
+
+function operationsLabel(part: Extract<MessagePart, { type: "activity" }>): string {
+  const ops = part.operations.map((op) => `${op.kind.replace(/_/g, " ")} ×${op.count}`).join(", ");
+  return ops ? `Browser activity: ${ops}` : "Browser activity";
+}
+
+function partLabel(part: MessagePart): string | null {
+  switch (part.type) {
+    case "text":
+      return part.text;
+    case "progress":
+      return part.text;
+    case "activity":
+      return operationsLabel(part);
+    case "input_request":
+      return part.question;
+    case "input_response":
+      return part.action === "submit"
+        ? "You answered the agent's question"
+        : part.action === "decline"
+          ? "You declined the agent's request"
+          : "You suggested an alternative";
+    case "result":
+      return part.summary;
+  }
+}
+
+/** Flatten the run's messages into rows: one per part that has something to show. */
+export function timelineItems(messages: CheckoutMessage[]): TimelineItem[] {
+  const items: TimelineItem[] = [];
+  for (const message of messages) {
+    message.parts.forEach((part, i) => {
+      const label = partLabel(part);
+      if (label == null) return;
+      items.push({
+        key: `${message.id}:${i}`,
+        label,
+        createdAt: message.createdAt,
+        userAction: part.type === "input_request" || part.type === "input_response",
+      });
+    });
+  }
+  return items;
 }
 
 export function ProgressTimeline({
   items,
   live,
 }: {
-  items: ProgressItem[];
+  items: TimelineItem[];
   /** When true, the last item is the agent's current action (pulsing). */
   live: boolean;
 }) {
@@ -44,13 +87,12 @@ export function ProgressTimeline({
       {items.map((item, i) => {
         const isLast = i === items.length - 1;
         const pending = live && isLast;
-        const isUserAction = item.type === "user-action";
         return (
-          <li key={i} className="relative flex gap-3 pl-0">
+          <li key={item.key} className="relative flex gap-3 pl-0">
             <span className="relative z-10 mt-0.5 flex size-4 shrink-0 items-center justify-center">
               {pending ? (
                 <span className="size-3 animate-pulse rounded-full bg-[#2377FF]" />
-              ) : isUserAction ? (
+              ) : item.userAction ? (
                 <span className="flex size-4 items-center justify-center rounded-full bg-[#b45309]/15">
                   <Hand className="size-2.5 text-[#b45309]" />
                 </span>
@@ -61,12 +103,10 @@ export function ProgressTimeline({
               )}
             </span>
             <div className="min-w-0 flex-1">
-              <p className="text-sm leading-5 text-[#00150d]">{itemLabel(item)}</p>
-              {item.createdAt && (
-                <p className="text-[11px] text-[#00150d]/35">
-                  {new Date(item.createdAt).toLocaleTimeString()}
-                </p>
-              )}
+              <p className="text-sm leading-5 text-[#00150d]">{item.label}</p>
+              <p className="text-[11px] text-[#00150d]/35">
+                {new Date(item.createdAt).toLocaleTimeString()}
+              </p>
             </div>
           </li>
         );
