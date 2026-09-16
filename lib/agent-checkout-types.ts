@@ -1,7 +1,7 @@
 // ─── Agent Checkouts API types ────────────────────────────────────────────
 // Mirrors the shape returned by ${CROSSMINT_BASE_URL}/api/unstable/agent-checkouts.
 
-/** A generic JSON Schema, as carried by a pending user action's responseSchema. */
+/** A generic JSON Schema, as carried by an input request's responseSchema. */
 export type JsonSchema = {
   type?: string;
   title?: string;
@@ -19,36 +19,40 @@ export type JsonSchema = {
   items?: JsonSchema;
 };
 
-/** status walks: queued → running → awaiting_user_action → succeeded | failed | cancelled */
+/** status walks: queued → running → awaiting_input → succeeded | blocked | failed | cancelled */
 export type CheckoutStatus =
   | "queued"
   | "running"
-  | "awaiting_user_action"
+  | "awaiting_input"
   | "succeeded"
+  | "blocked"
   | "failed"
   | "cancelled";
 
-export const TERMINAL_STATUSES: CheckoutStatus[] = ["succeeded", "failed", "cancelled"];
+export const TERMINAL_STATUSES: CheckoutStatus[] = ["succeeded", "blocked", "failed", "cancelled"];
 
 export function isTerminal(status: CheckoutStatus): boolean {
   return TERMINAL_STATUSES.includes(status);
 }
 
-/** What the agent wants the buyer to do — rendered as a dynamic form. */
-export type PendingUserAction = {
-  id: string;
-  message: string;
-  responseSchema: JsonSchema;
-  expiresAt?: string;
-};
-
-/** An ordered, append-only log of what the agent has done so far. */
-export type ProgressItem = {
-  type: string; // e.g. "step" | "user-action"
-  message?: string;
-  title?: string;
-  createdAt?: string;
-  [key: string]: unknown;
+/**
+ * What the agent wants the buyer to do — rendered as a dynamic form. Carried on
+ * the run as `requiredAction` while `status === "awaiting_input"`, and answered
+ * by sending an `input_response` message that references `requestId`.
+ */
+export type RequiredAction = {
+  type: "input_response";
+  messageId: string;
+  requestId: string;
+  request: {
+    expiresAt: string;
+    question: string;
+    interaction: {
+      kind: "form";
+      responseSchema: JsonSchema;
+      uiSchema: Record<string, unknown>;
+    };
+  };
 };
 
 export type Money = { amount: string; currency: string };
@@ -137,74 +141,153 @@ export type CreateBrowserProfileInput = { label?: string };
 /** Body for PATCH /agent-checkouts/browser-profiles/:id — the label is the only editable field. */
 export type UpdateBrowserProfileInput = { label: string };
 
-/** GET /agent-checkouts/browser-profiles. Unpaginated: a user holds at most one profile. */
-export type BrowserProfilesResponse = { data: BrowserProfile[] };
+/**
+ * GET /agent-checkouts/browser-profiles. Shaped like the other list endpoints,
+ * but a user holds at most one profile today, so `nextCursor` is `null`.
+ */
+export type BrowserProfilesResponse = { data: BrowserProfile[]; nextCursor: string | null };
 
-export type Receipt = {
-  total?: Money | string;
-  capturedAt?: string;
-  merchantOrderId?: string;
-  evidence?: {
-    confirmationUrl?: string;
-    confirmationText?: string;
-  };
-};
+/** What the agent bought, on a `succeeded` run. */
+export type Purchase =
+  | { kind: "receipt_captured"; receipt: { total: Money; merchantOrderId?: string } }
+  | { kind: "confirmed_without_receipt" };
 
+/** Why the agent stopped on purpose, on a `blocked` run. */
+export type BlockedCode =
+  | "policy.max_cost_exceeded"
+  | "product.item_unavailable"
+  | "product.requested_option_unavailable"
+  | "merchant.fulfillment_unavailable"
+  | "merchant.human_verification_required"
+  | "merchant.access_blocked"
+  | "merchant.payment_declined"
+  | "merchant.checkout_error"
+  | "merchant.no_safe_path";
+
+/** Why the run itself broke, on a `failed` run. */
 export type FailureReason =
-  | "max_cost_exceeded"
-  | "user_cancelled"
-  | "user_action_expired"
-  | "automation_failed";
+  | "reconciliation_required"
+  | "cost_limit"
+  | "accounting_unavailable"
+  | "cancelled"
+  | "model_error"
+  | "runtime_error"
+  | "browser_session_lost"
+  | "input_expired";
 
-export type Failure = {
-  reason: FailureReason;
-  message?: string;
-  failedAt?: string;
+/** The terminal outcome carried on the run and in the last `result` message. */
+export type CheckoutResult =
+  | { outcome: "succeeded"; summary: string; purchase: Purchase }
+  | { outcome: "blocked"; summary: string; code: BlockedCode }
+  | { outcome: "cancelled"; summary: string }
+  | { outcome: "failed"; summary: string };
+
+/** The live browser session the agent is driving. `null` until one is attached. */
+export type CheckoutBrowser = {
+  embedUrl: string;
+  // View-only: the embed is for watching, not interacting.
+  permissions: readonly ["read"];
+} | null;
+
+/** The echo of what the run was created with. */
+export type CheckoutInput = {
+  request: { startUrl: string; task?: string };
+  constraints: { maxCost: Money };
+  buyerProfileId?: string;
+  browserProfileId?: string;
+  merchantGuidance?: string;
 };
 
-/** The full checkout view returned by POST / and GET /:id. */
+/**
+ * The run view returned by POST / and GET /:id. Terminal runs carry `result`;
+ * a `failed` run carries `reason` instead, with the summary in its last
+ * `result` message.
+ */
 export type CheckoutView = {
-  id: string;
+  runId: string;
+  createdAt: string;
+  revision: number;
+  knownSpentUsdMicros: number;
+  input: CheckoutInput;
   status: CheckoutStatus;
-  target: {
-    kind: string; // "direct_url"
-    url: string;
-    request?: string;
-  };
-  constraints: {
-    maxCost: Money;
-  };
-  metadata?: Record<string, unknown>;
-  progressItems: ProgressItem[];
-  pendingUserAction?: PendingUserAction;
-  browser?: {
-    embedUrl?: string;
-    permissions?: unknown;
-  };
-  receipt?: Receipt;
-  failure?: Failure;
-  createdAt?: string;
-  updatedAt?: string;
+  requiredAction?: RequiredAction | null;
+  browser?: CheckoutBrowser;
+  result?: CheckoutResult;
+  reason?: FailureReason;
 };
 
-/** POST /:id/actions/:aid → 202 */
-export type ActionAck = {
-  checkoutId: string;
-  actionId: string;
-  status: "accepted";
-  acceptedAt?: string;
+// ─── Messages ───────────────────────────────────────────────────────────────
+// The run's conversation: what the agent did (activity, progress), what it asked
+// (input_request), what the buyer answered (input_response), and how it ended
+// (result). Read with GET /:id/messages; the buyer writes with POST /:id/messages.
+
+export type MessagePart =
+  | { type: "text"; text: string; delivery?: "accepted" | "consumed" }
+  | {
+      type: "activity";
+      status: "running" | "completed" | "incomplete" | "uncertain";
+      operations: { kind: string; count: number }[];
+    }
+  | {
+      type: "input_request";
+      requestId: string;
+      status: "open" | "closed";
+      expiresAt: string;
+      question: string;
+      interaction: { kind: "form"; responseSchema: JsonSchema; uiSchema: Record<string, unknown> };
+    }
+  | { type: "input_response"; requestId: string; action: "submit" | "alternative" | "decline" }
+  | { type: "progress"; text: string }
+  | ({ type: "result" } & CheckoutResult);
+
+export type CheckoutMessage = {
+  id: string;
+  revision: number;
+  role: "user" | "assistant";
+  createdAt: string;
+  parts: MessagePart[];
 };
+
+/** One page of GET /:id/messages. `streamCursor` resumes the SSE stream. */
+export type CheckoutMessagesPage = {
+  data: CheckoutMessage[];
+  nextCursor: string | null;
+  streamCursor: string;
+};
+
+/** A form answer to an input request: field name → value. */
+export type FormValues = Record<string, string | number | boolean | string[]>;
+
+/** The single part of a buyer message sent with POST /:id/messages. */
+export type OutboundMessagePart =
+  | { type: "text"; text: string }
+  | {
+      type: "input_response";
+      requestId: string;
+      action: "submit";
+      response: { kind: "form"; values: FormValues };
+    }
+  | { type: "input_response"; requestId: string; action: "alternative"; text: string }
+  | { type: "input_response"; requestId: string; action: "decline" };
+
+/** Body for POST /:id/messages. `id` is client-generated so a retry is not applied twice. */
+export type OutboundMessage = { id: string; parts: [OutboundMessagePart] };
+
+/** POST /:id/messages → 202 */
+export type MessageAck = { status: "accepted"; messageId: string };
+
+/** POST /:id/cancel → 202 */
+export type CancelAck = { status: "accepted" };
 
 /** Input for creating a checkout via the form. */
 export type CreateCheckoutInput = {
-  targetUrl: string;
-  request?: string;
+  startUrl: string;
+  task?: string;
   // Optional free-text guidance for unusual checkouts (no cart, custom labels, a
   // non-obvious path to pay). Tells the agent exactly what to click on this site.
-  merchantContext?: string;
+  merchantGuidance?: string;
   maxCostAmount?: string;
   maxCostCurrency?: string;
-  orderRef?: string;
   // Optional saved buyer profile whose name/contact/shipping the agent should use.
   buyerProfileId?: string;
   // Optional browser profile whose saved merchant logins the run should reuse.
@@ -212,33 +295,30 @@ export type CreateCheckoutInput = {
 };
 
 /**
- * Builds the POST / request body from form input. Shared by the create server
- * action and the "Code" view so the logged request matches the real wire shape.
+ * Builds the POST / request body from form input. Shared by the create call
+ * and the "Code" view so the logged request matches the real wire shape.
  */
 export function buildCreateCheckoutBody(input: CreateCheckoutInput) {
   return {
-    target: {
-      kind: "direct_url",
-      url: input.targetUrl,
-      ...(input.request ? { request: input.request } : {}),
-      // Only for unusual checkouts — steers the agent through non-standard flows.
-      ...(input.merchantContext ? { merchantContext: input.merchantContext } : {}),
+    request: {
+      startUrl: input.startUrl,
+      ...(input.task ? { task: input.task } : {}),
     },
+    // Only for unusual checkouts — steers the agent through non-standard flows.
+    ...(input.merchantGuidance ? { merchantGuidance: input.merchantGuidance } : {}),
     // Optional: attach a saved buyer profile by id so the agent reuses the
     // buyer's name/contact/shipping instead of asking for them.
     ...(input.buyerProfileId ? { buyerProfileId: input.buyerProfileId } : {}),
     // Optional: run inside the user's saved browser identity, so merchant
     // logins captured by earlier runs are already there.
     ...(input.browserProfileId ? { browserProfileId: input.browserProfileId } : {}),
-    // constraints.maxCost is required by the API. Collected from the form's
-    // "Max cost" + "Currency" fields; the defaults are a fallback only.
+    // constraints.maxCost is required by the API; the defaults are a fallback only.
     constraints: {
       maxCost: {
         amount: input.maxCostAmount ?? "100.00",
         currency: (input.maxCostCurrency ?? "USD").toUpperCase(),
       },
     },
-    ...(input.orderRef ? { metadata: { orderRef: input.orderRef } } : {}),
   };
 }
 

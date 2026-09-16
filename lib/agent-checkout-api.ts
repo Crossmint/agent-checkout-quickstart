@@ -8,23 +8,30 @@
 // with the allowed-origins setting on the key in the Crossmint console.)
 //
 // Lifecycle (this is the loop the sample app implements):
-//   1. createCheckout    POST   /                    → 200  { id, status: "queued", ... }
-//   2. getCheckout       GET    /:id                 → 200  poll every ~1-2s (no webhooks in v1)
-//   3. respondToAction   POST   /:id/actions/:aid    → 202  when status === "awaiting_user_action"
-//   4. cancelCheckout    DELETE /:id                 → 202  cancel any time
+//   1. createCheckout    POST   /                    → 202  { runId, status: "queued", ... }
+//   2. getCheckout       GET    /:id                 → 200  poll every ~1-2s (no webhooks)
+//      listMessages      GET    /:id/messages        → 200  what the agent did, asked, and concluded
+//   3. sendMessage       POST   /:id/messages        → 202  answer an input request (status === "awaiting_input")
+//   4. cancelCheckout    POST   /:id/cancel          → 202  cancel any time
 
 import {
   buildCreateCheckoutBody,
   buildCreateBuyerProfileBody,
-  type ActionAck,
   type BrowserProfile,
   type BrowserProfilesResponse,
   type BuyerProfile,
   type BuyerProfilesPage,
+  type CancelAck,
+  type CheckoutMessage,
+  type CheckoutMessagesPage,
   type CheckoutView,
   type CreateBrowserProfileInput,
   type CreateBuyerProfileInput,
   type CreateCheckoutInput,
+  type FormValues,
+  type MessageAck,
+  type OutboundMessage,
+  type OutboundMessagePart,
   type UpdateBrowserProfileInput,
   type UpdateBuyerProfileInput,
 } from "@/lib/agent-checkout-types";
@@ -80,9 +87,8 @@ async function readError(res: Response): Promise<string> {
 
 /**
  * Create a checkout. `constraints.maxCost` is required and the currency must be
- * a 3-letter code. `target.request` is the optional natural-language instruction
- * for the agent. Returns the full checkout view with status "queued" — save `id`,
- * it is both the Crossmint checkout id and the underlying intent id.
+ * a 3-letter code. `request.task` is the optional natural-language instruction
+ * for the agent. Returns 202 with the run view in status "queued" — save `runId`.
  */
 export async function createCheckout(jwt: string, input: CreateCheckoutInput): Promise<CheckoutView> {
   const body = buildCreateCheckoutBody(input);
@@ -102,7 +108,7 @@ export async function createCheckout(jwt: string, input: CreateCheckoutInput): P
 
 // ─── 2. Poll ──────────────────────────────────────────────────────────────--
 
-/** Fetch the current checkout view. Poll this every ~1-2s; there are no webhooks in v1. */
+/** Fetch the current run view. Poll this every ~1-2s; there are no webhooks. */
 export async function getCheckout(jwt: string, id: string): Promise<CheckoutView> {
   const res = await fetch(`${API_BASE}/${id}`, {
     headers: authHeaders(jwt),
@@ -113,67 +119,93 @@ export async function getCheckout(jwt: string, id: string): Promise<CheckoutView
   return data;
 }
 
-// ─── 3. Respond to a pending user action ──────────────────────────────────--
-
-/**
- * Submit a response to a pending user action. `values` must satisfy the action's
- * responseSchema. NOTE: the action id goes in the URL only — never in the body
- * (the endpoint is .strict() and rejects an actionId field). Returns a 202 ack;
- * go back to polling, since more actions may follow (e.g. payment after shipping).
- */
-export async function submitAction(
+/** Fetch one page of the run's messages. Pass the previous page's `nextCursor` to continue. */
+export async function listMessages(
   jwt: string,
-  checkoutId: string,
-  actionId: string,
-  values: Record<string, unknown>,
-): Promise<ActionAck> {
-  const body = { action: "submit", values };
-  log(`POST /agent-checkouts/${checkoutId}/actions/${actionId} → request body`, body);
-  const res = await fetch(`${API_BASE}/${checkoutId}/actions/${actionId}`, {
-    method: "POST",
+  runId: string,
+  opts: { limit?: number; cursor?: string } = {},
+): Promise<CheckoutMessagesPage> {
+  const params = new URLSearchParams();
+  if (opts.limit != null) params.set("limit", String(opts.limit));
+  if (opts.cursor) params.set("cursor", opts.cursor);
+  const query = params.toString();
+  const res = await fetch(`${API_BASE}/${runId}/messages${query ? `?${query}` : ""}`, {
     headers: authHeaders(jwt),
-    body: JSON.stringify(body),
     cache: "no-store",
   });
-  if (!res.ok) throw new Error(`Failed to submit action (${res.status}): ${await readError(res)}`);
-  const data: ActionAck = await res.json();
-  log(`POST /agent-checkouts/${checkoutId}/actions/${actionId} → response`, data);
+  if (!res.ok) throw new Error(`Failed to list messages (${res.status}): ${await readError(res)}`);
+  const data: CheckoutMessagesPage = await res.json();
   return data;
 }
 
-/** Decline a pending user action with an optional reason. */
-export async function declineAction(
+/** Walk every page of the run's messages, oldest first. */
+export async function listAllMessages(jwt: string, runId: string): Promise<CheckoutMessage[]> {
+  const all: CheckoutMessage[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await listMessages(jwt, runId, cursor ? { cursor } : {});
+    all.push(...page.data);
+    cursor = page.nextCursor ?? undefined;
+  } while (cursor);
+  return all.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+// ─── 3. Answer an input request ───────────────────────────────────────────--
+
+/**
+ * Send one message to the run. The `id` is generated here so the same message
+ * retried is not applied twice. Returns a 202 ack as soon as the message is
+ * accepted (not when the agent has consumed it); go back to polling, since more
+ * input requests may follow (e.g. payment after shipping).
+ */
+export async function sendMessage(
   jwt: string,
-  checkoutId: string,
-  actionId: string,
-  reason?: string,
-): Promise<ActionAck> {
-  const body = { action: "decline", ...(reason ? { reason } : {}) };
-  log(`POST /agent-checkouts/${checkoutId}/actions/${actionId} → decline`, body);
-  const res = await fetch(`${API_BASE}/${checkoutId}/actions/${actionId}`, {
+  runId: string,
+  part: OutboundMessagePart,
+): Promise<{ body: OutboundMessage; ack: MessageAck }> {
+  const body: OutboundMessage = { id: crypto.randomUUID(), parts: [part] };
+  log(`POST /agent-checkouts/${runId}/messages → request body`, body);
+  const res = await fetch(`${API_BASE}/${runId}/messages`, {
     method: "POST",
     headers: authHeaders(jwt),
     body: JSON.stringify(body),
     cache: "no-store",
   });
-  if (!res.ok) throw new Error(`Failed to decline action (${res.status}): ${await readError(res)}`);
-  const data: ActionAck = await res.json();
-  log(`POST /agent-checkouts/${checkoutId}/actions/${actionId} → declined`, data);
-  return data;
+  if (!res.ok) throw new Error(`Failed to send message (${res.status}): ${await readError(res)}`);
+  const ack: MessageAck = await res.json();
+  log(`POST /agent-checkouts/${runId}/messages → response`, ack);
+  return { body, ack };
+}
+
+/** Answer an input request with form values that satisfy its `responseSchema`. */
+export function submitInput(jwt: string, runId: string, requestId: string, values: FormValues) {
+  return sendMessage(jwt, runId, {
+    type: "input_response",
+    requestId,
+    action: "submit",
+    response: { kind: "form", values },
+  });
+}
+
+/** Refuse an input request. The agent decides how to proceed (often by stopping). */
+export function declineInput(jwt: string, runId: string, requestId: string) {
+  return sendMessage(jwt, runId, { type: "input_response", requestId, action: "decline" });
 }
 
 // ─── 4. Cancel ──────────────────────────────────────────────────────────────
 
 /** Cancel a checkout. Async — the status flips to "cancelled" on a later poll. */
-export async function cancelCheckout(jwt: string, id: string): Promise<void> {
-  log("DELETE /agent-checkouts/:id → request", { id });
-  const res = await fetch(`${API_BASE}/${id}`, {
-    method: "DELETE",
+export async function cancelCheckout(jwt: string, runId: string): Promise<CancelAck> {
+  log("POST /agent-checkouts/:id/cancel → request", { runId });
+  const res = await fetch(`${API_BASE}/${runId}/cancel`, {
+    method: "POST",
     headers: authHeaders(jwt),
     cache: "no-store",
   });
   if (!res.ok) throw new Error(`Failed to cancel checkout (${res.status}): ${await readError(res)}`);
-  log("DELETE /agent-checkouts/:id → accepted", { id, status: res.status });
+  const data: CancelAck = await res.json();
+  log("POST /agent-checkouts/:id/cancel → accepted", data);
+  return data;
 }
 
 // ─── Buyer profiles ─────────────────────────────────────────────────────────
@@ -305,12 +337,12 @@ export async function deleteBuyerProfile(jwt: string, id: string): Promise<void>
 // endpoint returns metadata only — the saved browser state itself is held by
 // Crossmint's browser infrastructure and never comes back over the API.
 //
-// A user holds at most one profile, so the list endpoint is unpaginated (no
-// cursor walking) and create answers 409 once one exists.
+// A user holds at most one profile, so the list fits in one page (no cursor
+// walking needed) and create answers 409 once one exists.
 //
 //   createBrowserProfile  POST   /browser-profiles       → 201  the profile (409 if one exists)
 //   getBrowserProfile     GET    /browser-profiles/:id   → 200  (404 if not owned)
-//   listBrowserProfiles   GET    /browser-profiles       → 200  { data }
+//   listBrowserProfiles   GET    /browser-profiles       → 200  { data, nextCursor }
 //   updateBrowserProfile  PATCH  /browser-profiles/:id   → 200  the renamed profile
 //   deleteBrowserProfile  DELETE /browser-profiles/:id   → 204  erases the saved state
 

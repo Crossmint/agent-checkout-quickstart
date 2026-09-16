@@ -6,8 +6,9 @@ import { useStytch, useStytchUser } from "@stytch/nextjs";
 import {
   createCheckout,
   getCheckout,
-  submitAction,
-  declineAction,
+  listAllMessages,
+  submitInput,
+  declineInput,
   cancelCheckout,
   resolveEmbedUrl,
   listAllBuyerProfiles,
@@ -20,12 +21,14 @@ import {
   type ApiCall,
   type BrowserProfile,
   type BuyerProfile,
+  type CheckoutMessage,
   type CheckoutView,
   type CreateCheckoutInput,
+  type FormValues,
 } from "@/lib/agent-checkout-types";
 import { CheckoutForm } from "@/components/checkout-form";
 import { StatusBadge } from "@/components/status-badge";
-import { ProgressTimeline } from "@/components/progress-timeline";
+import { ProgressTimeline, timelineItems } from "@/components/progress-timeline";
 import { BrowserFrame } from "@/components/browser-frame";
 import { ActionForm } from "@/components/action-form";
 import { OutcomeCard } from "@/components/outcome-card";
@@ -142,13 +145,16 @@ function CheckoutApp() {
   }, []);
 
   const [checkout, setCheckout] = useState<CheckoutView | null>(null);
+  // The run's conversation (GET /:id/messages): the run view itself only carries
+  // status + outcome, so the timeline is built from these.
+  const [messages, setMessages] = useState<CheckoutMessage[]>([]);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [actionBusy, setActionBusy] = useState(false);
   const [cancelling, setCancelling] = useState(false);
-  // Track the action we've already answered so we don't re-render the form
-  // while the next poll still reports the same pending action.
-  const [respondedActionId, setRespondedActionId] = useState<string | null>(null);
+  // Track the input request we've already answered so we don't re-render the
+  // form while the next poll still reports the same requiredAction.
+  const [respondedRequestId, setRespondedRequestId] = useState<string | null>(null);
 
   // "Code" view: a running log of the API calls the app makes.
   const [viewMode, setViewMode] = useState<ViewMode>("ui");
@@ -157,31 +163,54 @@ function CheckoutApp() {
     setApiLog((prev) => [...prev, { ...call, at: new Date().toLocaleTimeString() }]);
   }, []);
 
+  // Refresh both the run view and its messages. Used by the poll loop and right
+  // after every write so the UI moves on without waiting for the next tick.
+  const refresh = useCallback(
+    async (runId: string) => {
+      const [next, nextMessages] = await Promise.all([
+        getCheckout(getJwt(), runId),
+        listAllMessages(getJwt(), runId),
+      ]);
+      setCheckout(next);
+      setMessages(nextMessages);
+      return { next, nextMessages };
+    },
+    [getJwt],
+  );
+
   // ── Polling loop ──────────────────────────────────────────────────────────
-  // No webhooks in v1: poll GET /:id every ~1.5s until a terminal state.
-  // setCheckout returns a fresh object each poll, re-running this effect.
+  // No webhooks: poll GET /:id and GET /:id/messages every ~1.5s until a
+  // terminal state. (GET /:id/messages/stream offers the same over SSE; this
+  // demo polls to keep the loop easy to read.) setCheckout returns a fresh
+  // object each poll, re-running this effect.
   useEffect(() => {
     if (!checkout || isTerminal(checkout.status)) return;
-    // While the agent is blocked on an *unanswered* action, nothing changes
-    // server-side until the buyer responds — so we stop polling entirely.
-    // Once they've responded (respondedActionId matches), we resume so we can
-    // catch the server moving past awaiting_user_action.
+    // While the agent is blocked on an *unanswered* input request, nothing
+    // changes server-side until the buyer responds — so we stop polling
+    // entirely. Once they've responded (respondedRequestId matches), we resume
+    // so we can catch the server moving past awaiting_input.
     const waitingOnUser =
-      checkout.status === "awaiting_user_action" &&
-      !!checkout.pendingUserAction &&
-      respondedActionId !== checkout.pendingUserAction.id;
+      checkout.status === "awaiting_input" &&
+      !!checkout.requiredAction &&
+      respondedRequestId !== checkout.requiredAction.requestId;
     if (waitingOnUser) return;
     let cancelled = false;
     const t = setTimeout(async () => {
       try {
-        const next = await getCheckout(getJwt(), checkout.id);
+        const before = { status: checkout.status, revision: checkout.revision, messages: messages.length };
+        const { next, nextMessages } = await refresh(checkout.runId);
         if (cancelled) return;
         // Log a poll only when something changed, so the Code view stays readable.
-        const changed =
-          next.status !== checkout.status ||
-          (next.progressItems?.length ?? 0) !== (checkout.progressItems?.length ?? 0);
-        if (changed) logCall({ method: "GET", path: `${BASE_PATH}/${next.id}`, response: next });
-        setCheckout(next);
+        if (next.status !== before.status || next.revision !== before.revision) {
+          logCall({ method: "GET", path: `${BASE_PATH}/${next.runId}`, response: next });
+        }
+        if (nextMessages.length !== before.messages) {
+          logCall({
+            method: "GET",
+            path: `${BASE_PATH}/${next.runId}/messages`,
+            response: { data: nextMessages.slice(before.messages) },
+          });
+        }
       } catch (err) {
         // Transient errors shouldn't kill the loop — nudge a re-poll.
         console.error("Poll failed:", err);
@@ -192,13 +221,14 @@ function CheckoutApp() {
       cancelled = true;
       clearTimeout(t);
     };
-  }, [checkout, respondedActionId, logCall, getJwt]);
+  }, [checkout, messages.length, respondedRequestId, logCall, refresh]);
 
   const handleCreate = useCallback(async (input: CreateCheckoutInput) => {
     setCreating(true);
     setError(null);
-    setRespondedActionId(null);
+    setRespondedRequestId(null);
     setApiLog([]);
+    setMessages([]);
     try {
       const view = await createCheckout(getJwt(), input);
       logCall({ method: "POST", path: BASE_PATH, requestBody: buildCreateCheckoutBody(input), response: view });
@@ -213,11 +243,11 @@ function CheckoutApp() {
 
   // Step 2 submit: attach the step-1 profile and the high cost cap, then create.
   const handleStartCheckout = useCallback(
-    (targetUrl: string, request: string, merchantContext: string) => {
+    (startUrl: string, task: string, merchantGuidance: string) => {
       handleCreate({
-        targetUrl,
-        request,
-        merchantContext: merchantContext.trim() || undefined,
+        startUrl,
+        task: task.trim() || undefined,
+        merchantGuidance: merchantGuidance.trim() || undefined,
         maxCostAmount: HIGH_MAX_COST.amount,
         maxCostCurrency: HIGH_MAX_COST.currency,
         buyerProfileId: effectiveSelectedId ?? undefined,
@@ -228,78 +258,75 @@ function CheckoutApp() {
   );
 
   const handleSubmitAction = useCallback(
-    async (values: Record<string, unknown>) => {
-      if (!checkout?.pendingUserAction) return;
-      const aid = checkout.pendingUserAction.id;
+    async (values: FormValues) => {
+      if (!checkout?.requiredAction) return;
+      const { requestId } = checkout.requiredAction;
       setActionBusy(true);
       setError(null);
       try {
-        const ack = await submitAction(getJwt(), checkout.id, aid, values);
+        const { body, ack } = await submitInput(getJwt(), checkout.runId, requestId, values);
         logCall({
           method: "POST",
-          path: `${BASE_PATH}/${checkout.id}/actions/${aid}`,
-          requestBody: { action: "submit", values },
+          path: `${BASE_PATH}/${checkout.runId}/messages`,
+          requestBody: body,
           response: ack,
         });
-        setRespondedActionId(aid);
-        // Refresh immediately so the UI moves on without waiting for the next tick.
-        setCheckout(await getCheckout(getJwt(), checkout.id));
+        setRespondedRequestId(requestId);
+        await refresh(checkout.runId);
       } catch (err) {
-        console.error("Submit action failed:", err);
-        setError(err instanceof Error ? err.message : "Failed to submit action");
+        console.error("Submit input failed:", err);
+        setError(err instanceof Error ? err.message : "Failed to submit your answer");
       } finally {
         setActionBusy(false);
       }
     },
-    [checkout, logCall, getJwt],
+    [checkout, logCall, getJwt, refresh],
   );
 
-  const handleDeclineAction = useCallback(
-    async (reason: string) => {
-      if (!checkout?.pendingUserAction) return;
-      const aid = checkout.pendingUserAction.id;
-      setActionBusy(true);
-      setError(null);
-      try {
-        const ack = await declineAction(getJwt(), checkout.id, aid, reason);
-        logCall({
-          method: "POST",
-          path: `${BASE_PATH}/${checkout.id}/actions/${aid}`,
-          requestBody: { action: "decline", reason },
-          response: ack,
-        });
-        setRespondedActionId(aid);
-        setCheckout(await getCheckout(getJwt(), checkout.id));
-      } catch (err) {
-        console.error("Decline action failed:", err);
-        setError(err instanceof Error ? err.message : "Failed to decline action");
-      } finally {
-        setActionBusy(false);
-      }
-    },
-    [checkout, logCall, getJwt],
-  );
+  const handleDeclineAction = useCallback(async () => {
+    if (!checkout?.requiredAction) return;
+    const { requestId } = checkout.requiredAction;
+    setActionBusy(true);
+    setError(null);
+    try {
+      const { body, ack } = await declineInput(getJwt(), checkout.runId, requestId);
+      logCall({
+        method: "POST",
+        path: `${BASE_PATH}/${checkout.runId}/messages`,
+        requestBody: body,
+        response: ack,
+      });
+      setRespondedRequestId(requestId);
+      await refresh(checkout.runId);
+    } catch (err) {
+      console.error("Decline input failed:", err);
+      setError(err instanceof Error ? err.message : "Failed to decline");
+    } finally {
+      setActionBusy(false);
+    }
+  }, [checkout, logCall, getJwt, refresh]);
 
   const handleCancel = useCallback(async () => {
     if (!checkout) return;
     setCancelling(true);
     setError(null);
     try {
-      await cancelCheckout(getJwt(), checkout.id);
-      logCall({ method: "DELETE", path: `${BASE_PATH}/${checkout.id}` });
-      setCheckout(await getCheckout(getJwt(), checkout.id));
+      const ack = await cancelCheckout(getJwt(), checkout.runId);
+      logCall({ method: "POST", path: `${BASE_PATH}/${checkout.runId}/cancel`, response: ack });
+      await refresh(checkout.runId);
     } catch (err) {
       console.error("Cancel checkout failed:", err);
       setError(err instanceof Error ? err.message : "Failed to cancel checkout");
     } finally {
       setCancelling(false);
     }
-  }, [checkout, logCall, getJwt]);
+  }, [checkout, logCall, getJwt, refresh]);
 
   const handleReset = () => {
     setCheckout(null);
+    setMessages([]);
     setError(null);
-    setRespondedActionId(null);
+    setRespondedRequestId(null);
     setApiLog([]);
     setViewMode("ui");
     // Back to "What to buy" — the buyer profile from step 1 stays selected.
@@ -309,14 +336,15 @@ function CheckoutApp() {
   const status = checkout?.status;
   const terminal = status ? isTerminal(status) : false;
 
-  // The pending action drives a modal centered over the video.
-  const pending = checkout?.pendingUserAction;
-  const awaiting = status === "awaiting_user_action";
-  // Only block the browser when there's a real, *unanswered* action. Once the
+  // The required action drives a modal centered over the video.
+  const pending = checkout?.requiredAction ?? null;
+  const awaiting = status === "awaiting_input";
+  // Only block the browser when there's a real, *unanswered* request. Once the
   // user has responded (or the agent is still acting without a concrete ask),
   // we keep the browser visible and show a small non-blocking indicator.
-  const showActionForm = Boolean(awaiting && pending && respondedActionId !== pending.id);
-  const showProcessing = Boolean(awaiting && pending && respondedActionId === pending.id);
+  const showActionForm = Boolean(awaiting && pending && respondedRequestId !== pending.requestId);
+  const showProcessing = Boolean(awaiting && pending && respondedRequestId === pending.requestId);
+  const timeline = timelineItems(messages);
 
   // Which step to render: a live checkout is always step 3.
   const currentStep: Step = checkout ? 3 : step === "buy" ? 2 : 1;
@@ -467,7 +495,7 @@ function CheckoutApp() {
                   <StatusBadge status={checkout.status} />
                 </div>
                 <ProgressTimeline
-                  items={checkout.progressItems ?? []}
+                  items={timeline}
                   live={status === "queued" || status === "running"}
                 />
               </div>
@@ -476,7 +504,7 @@ function CheckoutApp() {
             {/* Video + outcome — right (wide) */}
             <main className="min-w-0 space-y-4">
               <div className="flex items-center justify-between gap-4">
-                <p className="min-w-0 truncate text-xs text-[#00150d]/45">{checkout.target.url}</p>
+                <p className="min-w-0 truncate text-xs text-[#00150d]/45">{checkout.input.request.startUrl}</p>
                 <div className="flex shrink-0 items-center gap-4">
                   <ElapsedTimer startedAt={startedAt} running={!terminal} />
                   {!terminal && (
@@ -493,13 +521,13 @@ function CheckoutApp() {
               </div>
 
               {/* Instruction the agent is working from. */}
-              {checkout.target.request && (
+              {checkout.input.request.task && (
                 <div className="rounded-[8px] bg-white px-4 py-3">
                   <p className="text-[11px] font-medium uppercase tracking-wide text-[#00150d]/40">
-                    Instruction
+                    Task
                   </p>
-                  <p className="mt-1 text-sm text-[#00150d]">“{checkout.target.request}”</p>
-                  <p className="mt-1 font-mono text-[11px] text-[#00150d]/30">{checkout.id}</p>
+                  <p className="mt-1 text-sm text-[#00150d]">“{checkout.input.request.task}”</p>
+                  <p className="mt-1 font-mono text-[11px] text-[#00150d]/30">{checkout.runId}</p>
                 </div>
               )}
 
@@ -552,7 +580,7 @@ function CheckoutApp() {
                 )}
               </div>
 
-              {terminal && <OutcomeCard checkout={checkout} />}
+              {terminal && <OutcomeCard checkout={checkout} messages={messages} />}
             </main>
           </div>
         )}
