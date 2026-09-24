@@ -28,7 +28,7 @@ import {
   type CreateBrowserProfileInput,
   type CreateBuyerProfileInput,
   type CreateCheckoutInput,
-  type FormValues,
+  type InputResponse,
   type MessageAck,
   type OutboundMessage,
   type OutboundMessagePart,
@@ -177,14 +177,19 @@ export async function sendMessage(
   return { body, ack };
 }
 
-/** Answer an input request with form values that satisfy its `responseSchema`. */
-export function submitInput(jwt: string, runId: string, requestId: string, values: FormValues) {
-  return sendMessage(jwt, runId, {
-    type: "input_response",
-    requestId,
-    action: "submit",
-    response: { kind: "form", values },
-  });
+/**
+ * Answer an input request. The response `kind` must match the request's
+ * `interaction.kind`: form values for `form`, an `orderIntentId` for `payment`,
+ * a `protectedInputId` for `protected`. Card and password values never appear
+ * here — the Crossmint-hosted components that collect them hand back only the ID.
+ */
+export function submitInput(
+  jwt: string,
+  runId: string,
+  requestId: string,
+  response: InputResponse,
+) {
+  return sendMessage(jwt, runId, { type: "input_response", requestId, action: "submit", response });
 }
 
 /** Refuse an input request. The agent decides how to proceed (often by stopping). */

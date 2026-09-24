@@ -11,6 +11,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@crossmint/client-sdk-base": "3.0.0",
+    "@crossmint/client-sdk-react-ui": "4.6.1",
+    "@crossmint/client-sdk-window": "1.1.1",
     "@rjsf/core": "6.5.2",
     "@rjsf/utils": "6.5.2",
     "@rjsf/validator-ajv8": "6.5.2",
@@ -18,7 +21,8 @@
     "lucide-react": "^1.8.0",
     "next": "16.2.8",
     "react": "^19.2.4",
-    "react-dom": "^19.2.4"
+    "react-dom": "^19.2.4",
+    "zod": "3.22.4"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3",

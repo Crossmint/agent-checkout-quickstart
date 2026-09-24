@@ -24,7 +24,7 @@ import {
   type CheckoutMessage,
   type CheckoutView,
   type CreateCheckoutInput,
-  type FormValues,
+  type InputResponse,
 } from "@/lib/agent-checkout-types";
 import { CheckoutForm } from "@/components/checkout-form";
 import { StatusBadge } from "@/components/status-badge";
@@ -258,13 +258,13 @@ function CheckoutApp() {
   );
 
   const handleSubmitAction = useCallback(
-    async (values: FormValues) => {
+    async (response: InputResponse) => {
       if (!checkout?.requiredAction) return;
       const { requestId } = checkout.requiredAction;
       setActionBusy(true);
       setError(null);
       try {
-        const { body, ack } = await submitInput(getJwt(), checkout.runId, requestId, values);
+        const { body, ack } = await submitInput(getJwt(), checkout.runId, requestId, response);
         logCall({
           method: "POST",
           path: `${BASE_PATH}/${checkout.runId}/messages`,
@@ -562,6 +562,7 @@ function CheckoutApp() {
                     <div className="animate-fade-in-scale w-full max-w-[440px]">
                       <ActionForm
                         action={pending!}
+                        jwt={getJwt()}
                         onSubmit={handleSubmitAction}
                         onDecline={handleDeclineAction}
                         submitting={actionBusy}

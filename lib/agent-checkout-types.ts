@@ -36,9 +36,28 @@ export function isTerminal(status: CheckoutStatus): boolean {
 }
 
 /**
- * What the agent wants the buyer to do — rendered as a dynamic form. Carried on
- * the run as `requiredAction` while `status === "awaiting_input"`, and answered
- * by sending an `input_response` message that references `requestId`.
+ * How the buyer answers an input request. `form` is rendered from its JSON
+ * Schema and answered with plain values. `payment` and `protected` carry safe
+ * metadata only: the card or password is collected by a Crossmint-hosted
+ * component and the answer is an opaque Crossmint ID, so the sensitive value
+ * never travels through the messages API.
+ */
+export type Interaction =
+  | { kind: "form"; responseSchema: JsonSchema; uiSchema: Record<string, unknown> }
+  | {
+      kind: "payment";
+      purpose: "checkout_payment";
+      method: "card";
+      // `exact` is the verified payable total; `maximum` is the run's cost ceiling.
+      amount: { kind: "exact" | "maximum"; value: string; currency: string };
+      merchant: { domain: string };
+    }
+  | { kind: "protected"; purpose: "password"; merchant: { domain: string } };
+
+/**
+ * What the agent wants the buyer to do. Carried on the run as `requiredAction`
+ * while `status === "awaiting_input"`, and answered by sending an
+ * `input_response` message that references `requestId`.
  */
 export type RequiredAction = {
   type: "input_response";
@@ -47,11 +66,7 @@ export type RequiredAction = {
   request: {
     expiresAt: string;
     question: string;
-    interaction: {
-      kind: "form";
-      responseSchema: JsonSchema;
-      uiSchema: Record<string, unknown>;
-    };
+    interaction: Interaction;
   };
 };
 
@@ -234,7 +249,7 @@ export type MessagePart =
       status: "open" | "closed";
       expiresAt: string;
       question: string;
-      interaction: { kind: "form"; responseSchema: JsonSchema; uiSchema: Record<string, unknown> };
+      interaction: Interaction;
     }
   | { type: "input_response"; requestId: string; action: "submit" | "alternative" | "decline" }
   | { type: "progress"; text: string }
@@ -258,6 +273,17 @@ export type CheckoutMessagesPage = {
 /** A form answer to an input request: field name → value. */
 export type FormValues = Record<string, string | number | boolean | string[]>;
 
+/**
+ * A submitted answer, matching the request's `interaction.kind`. The payment
+ * and protected answers are Crossmint locators, not credentials: the run
+ * resolves them server-side and nothing here can charge a card or reveal a
+ * password on its own.
+ */
+export type InputResponse =
+  | { kind: "form"; values: FormValues }
+  | { kind: "payment"; orderIntentId: string }
+  | { kind: "protected"; protectedInputId: string };
+
 /** The single part of a buyer message sent with POST /:id/messages. */
 export type OutboundMessagePart =
   | { type: "text"; text: string }
@@ -265,7 +291,7 @@ export type OutboundMessagePart =
       type: "input_response";
       requestId: string;
       action: "submit";
-      response: { kind: "form"; values: FormValues };
+      response: InputResponse;
     }
   | { type: "input_response"; requestId: string; action: "alternative"; text: string }
   | { type: "input_response"; requestId: string; action: "decline" };
