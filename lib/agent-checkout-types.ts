@@ -29,16 +29,44 @@ export type CheckoutStatus =
   | "failed"
   | "cancelled";
 
-export const TERMINAL_STATUSES: CheckoutStatus[] = ["succeeded", "blocked", "failed", "cancelled"];
+export const TERMINAL_STATUSES: CheckoutStatus[] = [
+  "succeeded",
+  "blocked",
+  "failed",
+  "cancelled",
+];
 
 export function isTerminal(status: CheckoutStatus): boolean {
   return TERMINAL_STATUSES.includes(status);
 }
 
 /**
- * What the agent wants the buyer to do — rendered as a dynamic form. Carried on
- * the run as `requiredAction` while `status === "awaiting_input"`, and answered
- * by sending an `input_response` message that references `requestId`.
+ * How the buyer answers an input request. `form` is rendered from its JSON
+ * Schema and answered with plain values. `payment` and `protected` carry safe
+ * metadata only: the card or password is collected by a Crossmint-hosted
+ * component and the answer is an opaque Crossmint ID, so the sensitive value
+ * never travels through the messages API.
+ */
+export type Interaction =
+  | {
+      kind: "form";
+      responseSchema: JsonSchema;
+      uiSchema: Record<string, unknown>;
+    }
+  | {
+      kind: "payment";
+      purpose: "checkout_payment";
+      method: "card";
+      // `exact` is the verified payable total; `maximum` is the run's cost ceiling.
+      amount: { kind: "exact" | "maximum"; value: string; currency: string };
+      merchant: { domain: string };
+    }
+  | { kind: "protected"; purpose: "password"; merchant: { domain: string } };
+
+/**
+ * What the agent wants the buyer to do. Carried on the run as `requiredAction`
+ * while `status === "awaiting_input"`, and answered by sending an
+ * `input_response` message that references `requestId`.
  */
 export type RequiredAction = {
   type: "input_response";
@@ -47,11 +75,7 @@ export type RequiredAction = {
   request: {
     expiresAt: string;
     question: string;
-    interaction: {
-      kind: "form";
-      responseSchema: JsonSchema;
-      uiSchema: Record<string, unknown>;
-    };
+    interaction: Interaction;
   };
 };
 
@@ -145,11 +169,17 @@ export type UpdateBrowserProfileInput = { label: string };
  * GET /agent-checkouts/browser-profiles. Shaped like the other list endpoints,
  * but a user holds at most one profile today, so `nextCursor` is `null`.
  */
-export type BrowserProfilesResponse = { data: BrowserProfile[]; nextCursor: string | null };
+export type BrowserProfilesResponse = {
+  data: BrowserProfile[];
+  nextCursor: string | null;
+};
 
 /** What the agent bought, on a `succeeded` run. */
 export type Purchase =
-  | { kind: "receipt_captured"; receipt: { total: Money; merchantOrderId?: string } }
+  | {
+      kind: "receipt_captured";
+      receipt: { total: Money; merchantOrderId?: string };
+    }
   | { kind: "confirmed_without_receipt" };
 
 /** Why the agent stopped on purpose, on a `blocked` run. */
@@ -234,9 +264,13 @@ export type MessagePart =
       status: "open" | "closed";
       expiresAt: string;
       question: string;
-      interaction: { kind: "form"; responseSchema: JsonSchema; uiSchema: Record<string, unknown> };
+      interaction: Interaction;
     }
-  | { type: "input_response"; requestId: string; action: "submit" | "alternative" | "decline" }
+  | {
+      type: "input_response";
+      requestId: string;
+      action: "submit" | "alternative" | "decline";
+    }
   | { type: "progress"; text: string }
   | ({ type: "result" } & CheckoutResult);
 
@@ -258,6 +292,39 @@ export type CheckoutMessagesPage = {
 /** A form answer to an input request: field name → value. */
 export type FormValues = Record<string, string | number | boolean | string[]>;
 
+/**
+ * A submitted answer, matching the request's `interaction.kind`. The payment
+ * and protected answers are Crossmint locators, not credentials: the run
+ * resolves them server-side and nothing here can charge a card or reveal a
+ * password on its own.
+ */
+export type InputResponse =
+  | { kind: "form"; values: FormValues }
+  | { kind: "payment"; sessionId: string }
+  | { kind: "protected"; sessionId: string };
+
+/**
+ * An ephemeral secure-collection session for one `payment` or `protected`
+ * input request (`POST /:id/input-requests/:requestId/sessions`). `clientToken`
+ * is a single-use, short-lived credential that only the Crossmint-hosted
+ * component may see: it is passed to the component and nowhere else. The
+ * `sessionId` is an opaque locator and is all that goes back on the messages API.
+ */
+export type SecureInputSession = {
+  sessionId: string;
+  clientToken: string;
+  expiresAt: string;
+};
+
+/** Current state of one input request (`GET /:id/input-requests/:requestId`). */
+export type InputRequestState = {
+  requestId: string;
+  status: "open" | "answered" | "closed" | "expired";
+  expiresAt: string;
+  question: string;
+  interaction: Interaction;
+};
+
 /** The single part of a buyer message sent with POST /:id/messages. */
 export type OutboundMessagePart =
   | { type: "text"; text: string }
@@ -265,9 +332,14 @@ export type OutboundMessagePart =
       type: "input_response";
       requestId: string;
       action: "submit";
-      response: { kind: "form"; values: FormValues };
+      response: InputResponse;
     }
-  | { type: "input_response"; requestId: string; action: "alternative"; text: string }
+  | {
+      type: "input_response";
+      requestId: string;
+      action: "alternative";
+      text: string;
+    }
   | { type: "input_response"; requestId: string; action: "decline" };
 
 /** Body for POST /:id/messages. `id` is client-generated so a retry is not applied twice. */
@@ -305,13 +377,17 @@ export function buildCreateCheckoutBody(input: CreateCheckoutInput) {
       ...(input.task ? { task: input.task } : {}),
     },
     // Only for unusual checkouts — steers the agent through non-standard flows.
-    ...(input.merchantGuidance ? { merchantGuidance: input.merchantGuidance } : {}),
+    ...(input.merchantGuidance
+      ? { merchantGuidance: input.merchantGuidance }
+      : {}),
     // Optional: attach a saved buyer profile by id so the agent reuses the
     // buyer's name/contact/shipping instead of asking for them.
     ...(input.buyerProfileId ? { buyerProfileId: input.buyerProfileId } : {}),
     // Optional: run inside the user's saved browser identity, so merchant
     // logins captured by earlier runs are already there.
-    ...(input.browserProfileId ? { browserProfileId: input.browserProfileId } : {}),
+    ...(input.browserProfileId
+      ? { browserProfileId: input.browserProfileId }
+      : {}),
     // constraints.maxCost is required by the API; the defaults are a fallback only.
     constraints: {
       maxCost: {
@@ -329,7 +405,9 @@ export function buildCreateCheckoutBody(input: CreateCheckoutInput) {
 export function buildCreateBuyerProfileBody(input: CreateBuyerProfileInput) {
   return {
     ...(input.label ? { label: input.label } : {}),
-    ...(input.name && (input.name.first || input.name.last) ? { name: input.name } : {}),
+    ...(input.name && (input.name.first || input.name.last)
+      ? { name: input.name }
+      : {}),
     ...(input.contact && (input.contact.email || input.contact.phone)
       ? { contact: input.contact }
       : {}),

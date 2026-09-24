@@ -28,15 +28,19 @@ import {
   type CreateBrowserProfileInput,
   type CreateBuyerProfileInput,
   type CreateCheckoutInput,
-  type FormValues,
+  type InputRequestState,
+  type InputResponse,
   type MessageAck,
+  type SecureInputSession,
   type OutboundMessage,
   type OutboundMessagePart,
   type UpdateBrowserProfileInput,
   type UpdateBuyerProfileInput,
 } from "@/lib/agent-checkout-types";
 
-const BASE_URL = (process.env.NEXT_PUBLIC_CROSSMINT_BASE_URL ?? "http://localhost:3000").replace(/\/$/, "");
+const BASE_URL = (
+  process.env.NEXT_PUBLIC_CROSSMINT_BASE_URL ?? "http://localhost:3000"
+).replace(/\/$/, "");
 const API_BASE = `${BASE_URL}/api/unstable/agent-checkouts`;
 const BUYER_PROFILES_BASE = `${API_BASE}/buyer-profiles`;
 const BROWSER_PROFILES_BASE = `${API_BASE}/browser-profiles`;
@@ -90,7 +94,10 @@ async function readError(res: Response): Promise<string> {
  * a 3-letter code. `request.task` is the optional natural-language instruction
  * for the agent. Returns 202 with the run view in status "queued" — save `runId`.
  */
-export async function createCheckout(jwt: string, input: CreateCheckoutInput): Promise<CheckoutView> {
+export async function createCheckout(
+  jwt: string,
+  input: CreateCheckoutInput,
+): Promise<CheckoutView> {
   const body = buildCreateCheckoutBody(input);
 
   log("POST /agent-checkouts → request body", body);
@@ -100,7 +107,10 @@ export async function createCheckout(jwt: string, input: CreateCheckoutInput): P
     body: JSON.stringify(body),
     cache: "no-store",
   });
-  if (!res.ok) throw new Error(`Failed to create checkout (${res.status}): ${await readError(res)}`);
+  if (!res.ok)
+    throw new Error(
+      `Failed to create checkout (${res.status}): ${await readError(res)}`,
+    );
   const data: CheckoutView = await res.json();
   log("POST /agent-checkouts → response", data);
   return data;
@@ -109,12 +119,18 @@ export async function createCheckout(jwt: string, input: CreateCheckoutInput): P
 // ─── 2. Poll ──────────────────────────────────────────────────────────────--
 
 /** Fetch the current run view. Poll this every ~1-2s; there are no webhooks. */
-export async function getCheckout(jwt: string, id: string): Promise<CheckoutView> {
+export async function getCheckout(
+  jwt: string,
+  id: string,
+): Promise<CheckoutView> {
   const res = await fetch(`${API_BASE}/${id}`, {
     headers: authHeaders(jwt),
     cache: "no-store",
   });
-  if (!res.ok) throw new Error(`Failed to fetch checkout (${res.status}): ${await readError(res)}`);
+  if (!res.ok)
+    throw new Error(
+      `Failed to fetch checkout (${res.status}): ${await readError(res)}`,
+    );
   const data: CheckoutView = await res.json();
   return data;
 }
@@ -129,17 +145,26 @@ export async function listMessages(
   if (opts.limit != null) params.set("limit", String(opts.limit));
   if (opts.cursor) params.set("cursor", opts.cursor);
   const query = params.toString();
-  const res = await fetch(`${API_BASE}/${runId}/messages${query ? `?${query}` : ""}`, {
-    headers: authHeaders(jwt),
-    cache: "no-store",
-  });
-  if (!res.ok) throw new Error(`Failed to list messages (${res.status}): ${await readError(res)}`);
+  const res = await fetch(
+    `${API_BASE}/${runId}/messages${query ? `?${query}` : ""}`,
+    {
+      headers: authHeaders(jwt),
+      cache: "no-store",
+    },
+  );
+  if (!res.ok)
+    throw new Error(
+      `Failed to list messages (${res.status}): ${await readError(res)}`,
+    );
   const data: CheckoutMessagesPage = await res.json();
   return data;
 }
 
 /** Walk every page of the run's messages, oldest first. */
-export async function listAllMessages(jwt: string, runId: string): Promise<CheckoutMessage[]> {
+export async function listAllMessages(
+  jwt: string,
+  runId: string,
+): Promise<CheckoutMessage[]> {
   const all: CheckoutMessage[] = [];
   let cursor: string | undefined;
   do {
@@ -171,38 +196,103 @@ export async function sendMessage(
     body: JSON.stringify(body),
     cache: "no-store",
   });
-  if (!res.ok) throw new Error(`Failed to send message (${res.status}): ${await readError(res)}`);
+  if (!res.ok)
+    throw new Error(
+      `Failed to send message (${res.status}): ${await readError(res)}`,
+    );
   const ack: MessageAck = await res.json();
   log(`POST /agent-checkouts/${runId}/messages → response`, ack);
   return { body, ack };
 }
 
-/** Answer an input request with form values that satisfy its `responseSchema`. */
-export function submitInput(jwt: string, runId: string, requestId: string, values: FormValues) {
+/** Current state of one input request; used to decide whether a fresh secure session is worth opening. */
+export async function getInputRequest(
+  jwt: string,
+  runId: string,
+  requestId: string,
+): Promise<InputRequestState> {
+  const res = await fetch(`${API_BASE}/${runId}/input-requests/${requestId}`, {
+    headers: authHeaders(jwt),
+    cache: "no-store",
+  });
+  if (!res.ok)
+    throw new Error(
+      `Failed to fetch input request (${res.status}): ${await readError(res)}`,
+    );
+  return res.json();
+}
+
+/**
+ * Open a secure-collection session for a `payment` or `protected` request.
+ * The response carries a single-use `clientToken`, so unlike the other calls it
+ * is deliberately not written to the console log or the app's Code view.
+ */
+export async function createInputRequestSession(
+  jwt: string,
+  runId: string,
+  requestId: string,
+): Promise<SecureInputSession> {
+  const res = await fetch(
+    `${API_BASE}/${runId}/input-requests/${requestId}/sessions`,
+    {
+      method: "POST",
+      headers: authHeaders(jwt),
+      cache: "no-store",
+    },
+  );
+  if (!res.ok)
+    throw new Error(
+      `Failed to open a secure session (${res.status}): ${await readError(res)}`,
+    );
+  return res.json();
+}
+
+/**
+ * Answer an input request. The response `kind` must match the request's
+ * `interaction.kind`: form values for `form`, the secure session's `sessionId`
+ * for `payment` and `protected`. Card and password values never appear here —
+ * the Crossmint-hosted component that collects them hands back only the locator.
+ */
+export function submitInput(
+  jwt: string,
+  runId: string,
+  requestId: string,
+  response: InputResponse,
+) {
   return sendMessage(jwt, runId, {
     type: "input_response",
     requestId,
     action: "submit",
-    response: { kind: "form", values },
+    response,
   });
 }
 
 /** Refuse an input request. The agent decides how to proceed (often by stopping). */
 export function declineInput(jwt: string, runId: string, requestId: string) {
-  return sendMessage(jwt, runId, { type: "input_response", requestId, action: "decline" });
+  return sendMessage(jwt, runId, {
+    type: "input_response",
+    requestId,
+    action: "decline",
+  });
 }
 
 // ─── 4. Cancel ──────────────────────────────────────────────────────────────
 
 /** Cancel a checkout. Async — the status flips to "cancelled" on a later poll. */
-export async function cancelCheckout(jwt: string, runId: string): Promise<CancelAck> {
+export async function cancelCheckout(
+  jwt: string,
+  runId: string,
+): Promise<CancelAck> {
   log("POST /agent-checkouts/:id/cancel → request", { runId });
   const res = await fetch(`${API_BASE}/${runId}/cancel`, {
     method: "POST",
     headers: authHeaders(jwt),
     cache: "no-store",
   });
-  if (!res.ok) throw new Error(`Failed to cancel checkout (${res.status}): ${await readError(res)}`);
+  if (!res.ok)
+    throw new Error(
+      `Failed to cancel checkout (${res.status}): ${await readError(res)}`,
+    );
   const data: CancelAck = await res.json();
   log("POST /agent-checkouts/:id/cancel → accepted", data);
   return data;
@@ -243,20 +333,29 @@ export async function createBuyerProfile(
     body: JSON.stringify(body),
     cache: "no-store",
   });
-  if (!res.ok) throw new Error(`Failed to create buyer profile (${res.status}): ${await readError(res)}`);
+  if (!res.ok)
+    throw new Error(
+      `Failed to create buyer profile (${res.status}): ${await readError(res)}`,
+    );
   const data: BuyerProfile = await res.json();
   log("POST /agent-checkouts/buyer-profiles → response", data);
   return data;
 }
 
 /** Fetch a single buyer profile. Throws BuyerProfileNotFoundError on a 404. */
-export async function getBuyerProfile(jwt: string, id: string): Promise<BuyerProfile> {
+export async function getBuyerProfile(
+  jwt: string,
+  id: string,
+): Promise<BuyerProfile> {
   const res = await fetch(`${BUYER_PROFILES_BASE}/${id}`, {
     headers: authHeaders(jwt),
     cache: "no-store",
   });
   if (res.status === 404) throw new BuyerProfileNotFoundError(id);
-  if (!res.ok) throw new Error(`Failed to fetch buyer profile (${res.status}): ${await readError(res)}`);
+  if (!res.ok)
+    throw new Error(
+      `Failed to fetch buyer profile (${res.status}): ${await readError(res)}`,
+    );
   return (await res.json()) as BuyerProfile;
 }
 
@@ -277,7 +376,10 @@ export async function listBuyerProfiles(
     headers: authHeaders(jwt),
     cache: "no-store",
   });
-  if (!res.ok) throw new Error(`Failed to list buyer profiles (${res.status}): ${await readError(res)}`);
+  if (!res.ok)
+    throw new Error(
+      `Failed to list buyer profiles (${res.status}): ${await readError(res)}`,
+    );
   return (await res.json()) as BuyerProfilesPage;
 }
 
@@ -287,7 +389,9 @@ export async function listBuyerProfiles(
  * `GET /:id` calls — and a query param is only added when a cursor exists, so
  * we don't trip the list route's strict input validation on a fresh load.
  */
-export async function listAllBuyerProfiles(jwt: string): Promise<BuyerProfile[]> {
+export async function listAllBuyerProfiles(
+  jwt: string,
+): Promise<BuyerProfile[]> {
   const all: BuyerProfile[] = [];
   let cursor: string | undefined;
   do {
@@ -311,22 +415,34 @@ export async function updateBuyerProfile(
     body: JSON.stringify(input),
     cache: "no-store",
   });
-  if (!res.ok) throw new Error(`Failed to update buyer profile (${res.status}): ${await readError(res)}`);
+  if (!res.ok)
+    throw new Error(
+      `Failed to update buyer profile (${res.status}): ${await readError(res)}`,
+    );
   const data: BuyerProfile = await res.json();
   log(`PATCH /agent-checkouts/buyer-profiles/${id} → response`, data);
   return data;
 }
 
 /** Delete a buyer profile. Returns 204 No Content. */
-export async function deleteBuyerProfile(jwt: string, id: string): Promise<void> {
+export async function deleteBuyerProfile(
+  jwt: string,
+  id: string,
+): Promise<void> {
   log("DELETE /agent-checkouts/buyer-profiles/:id → request", { id });
   const res = await fetch(`${BUYER_PROFILES_BASE}/${id}`, {
     method: "DELETE",
     headers: authHeaders(jwt),
     cache: "no-store",
   });
-  if (!res.ok) throw new Error(`Failed to delete buyer profile (${res.status}): ${await readError(res)}`);
-  log("DELETE /agent-checkouts/buyer-profiles/:id → accepted", { id, status: res.status });
+  if (!res.ok)
+    throw new Error(
+      `Failed to delete buyer profile (${res.status}): ${await readError(res)}`,
+    );
+  log("DELETE /agent-checkouts/buyer-profiles/:id → accepted", {
+    id,
+    status: res.status,
+  });
 }
 
 // ─── Browser profiles ───────────────────────────────────────────────────────
@@ -368,29 +484,43 @@ export async function createBrowserProfile(
     cache: "no-store",
   });
   if (res.status === 409) throw new BrowserProfileExistsError();
-  if (!res.ok) throw new Error(`Failed to create browser profile (${res.status}): ${await readError(res)}`);
+  if (!res.ok)
+    throw new Error(
+      `Failed to create browser profile (${res.status}): ${await readError(res)}`,
+    );
   const data: BrowserProfile = await res.json();
   log("POST /agent-checkouts/browser-profiles → response", data);
   return data;
 }
 
 /** Fetch a single browser profile. A profile owned by anyone else is a 404. */
-export async function getBrowserProfile(jwt: string, id: string): Promise<BrowserProfile> {
+export async function getBrowserProfile(
+  jwt: string,
+  id: string,
+): Promise<BrowserProfile> {
   const res = await fetch(`${BROWSER_PROFILES_BASE}/${id}`, {
     headers: authHeaders(jwt),
     cache: "no-store",
   });
-  if (!res.ok) throw new Error(`Failed to fetch browser profile (${res.status}): ${await readError(res)}`);
+  if (!res.ok)
+    throw new Error(
+      `Failed to fetch browser profile (${res.status}): ${await readError(res)}`,
+    );
   return (await res.json()) as BrowserProfile;
 }
 
 /** The user's browser profile, or null when they don't have one yet. */
-export async function findBrowserProfile(jwt: string): Promise<BrowserProfile | null> {
+export async function findBrowserProfile(
+  jwt: string,
+): Promise<BrowserProfile | null> {
   const res = await fetch(BROWSER_PROFILES_BASE, {
     headers: authHeaders(jwt),
     cache: "no-store",
   });
-  if (!res.ok) throw new Error(`Failed to list browser profiles (${res.status}): ${await readError(res)}`);
+  if (!res.ok)
+    throw new Error(
+      `Failed to list browser profiles (${res.status}): ${await readError(res)}`,
+    );
   const page = (await res.json()) as BrowserProfilesResponse;
   return page.data[0] ?? null;
 }
@@ -408,7 +538,10 @@ export async function updateBrowserProfile(
     body: JSON.stringify(input),
     cache: "no-store",
   });
-  if (!res.ok) throw new Error(`Failed to update browser profile (${res.status}): ${await readError(res)}`);
+  if (!res.ok)
+    throw new Error(
+      `Failed to update browser profile (${res.status}): ${await readError(res)}`,
+    );
   const data: BrowserProfile = await res.json();
   log(`PATCH /agent-checkouts/browser-profiles/${id} → response`, data);
   return data;
@@ -419,13 +552,22 @@ export async function updateBrowserProfile(
  * Crossmint's record of it, so every saved merchant login is gone. Runs already
  * using the profile finish first; erasure completes once they end.
  */
-export async function deleteBrowserProfile(jwt: string, id: string): Promise<void> {
+export async function deleteBrowserProfile(
+  jwt: string,
+  id: string,
+): Promise<void> {
   log("DELETE /agent-checkouts/browser-profiles/:id → request", { id });
   const res = await fetch(`${BROWSER_PROFILES_BASE}/${id}`, {
     method: "DELETE",
     headers: authHeaders(jwt),
     cache: "no-store",
   });
-  if (!res.ok) throw new Error(`Failed to delete browser profile (${res.status}): ${await readError(res)}`);
-  log("DELETE /agent-checkouts/browser-profiles/:id → accepted", { id, status: res.status });
+  if (!res.ok)
+    throw new Error(
+      `Failed to delete browser profile (${res.status}): ${await readError(res)}`,
+    );
+  log("DELETE /agent-checkouts/browser-profiles/:id → accepted", {
+    id,
+    status: res.status,
+  });
 }

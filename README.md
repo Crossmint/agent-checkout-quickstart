@@ -20,14 +20,14 @@ The app walks you through **three steps**:
 
 1. **Profiles** — pick (or create) a **buyer profile**: a reusable set of buyer details (name, contact, shipping) the agent uses so it doesn't have to ask. Optionally create a **browser profile** too, so merchant logins survive from one checkout to the next.
 2. **What to buy** — paste a product URL and write a buyer request. The more you specify up front (size, payment method, delivery option, billing address), the fewer questions the agent stops to ask. You set the payment _method_ here (e.g. "pay by card"), but not the card details — the agent asks for those during checkout.
-3. **Checkout** — watch the live browser session with the instruction and an elapsed timer, enter card details when the agent prompts for them (a warning explains what's safe to paste), answer any other prompts, and cancel any time.
+3. **Checkout** — watch the live browser session with the instruction and an elapsed timer, pick or add a card in the Crossmint-hosted card component when the agent asks to pay (the card never reaches this app or the agent), answer any other prompts, and cancel any time.
 
 **Learn how to:**
 - Create a checkout from a product URL + a natural-language instruction, attaching a saved buyer profile by `buyerProfileId`
 - Poll the checkout through its lifecycle: `queued → running → awaiting_input → succeeded | blocked | failed | cancelled`
 - Embed the live browser session the agent is driving
 - Read the run's messages to show what the agent is doing
-- Render a form dynamically from each input request's JSON Schema — never hardcoding fields
+- Branch on each input request's `interaction.kind`: render `form` requests dynamically from their JSON Schema (never hardcoding fields), and collect `payment` (card) and `protected` (merchant password) requests through Crossmint-hosted components so the sensitive value never enters the app or the messages API
 - Answer or decline input requests, and read the final purchase, blocked code, or failure reason
 - Save reusable **buyer profiles** (name, contact, shipping) and attach one to a checkout with `buyerProfileId`
 - Reuse a merchant login across runs with a **browser profile**, attached with `browserProfileId`
@@ -41,7 +41,9 @@ The app calls five endpoints under `${NEXT_PUBLIC_CROSSMINT_BASE_URL}/api/unstab
 | 1. Create | `POST /` | `202` — run view, `status: "queued"`. Save `runId`. |
 | 2. Poll | `GET /:id` | `200` — repeat every ~1.5s (no webhooks). |
 | 2. Poll | `GET /:id/messages` | `200` — `{ data, nextCursor, streamCursor }`; what the agent did, asked, and concluded. |
-| 3. Respond | `POST /:id/messages` | `202` — an `input_response` part for `requiredAction.requestId`, when `status === "awaiting_input"`. |
+| 3. Respond | `POST /:id/messages` | `202` — an `input_response` part for `requiredAction.requestId`, when `status === "awaiting_input"`. Its `response.kind` mirrors the request's `interaction.kind`: `{ kind: "form", values }`, `{ kind: "payment", sessionId }`, or `{ kind: "protected", sessionId }`. |
+| 3. Secure input | `POST /:id/input-requests/:requestId/sessions` | `{ sessionId, clientToken, expiresAt }` (`Cache-Control: no-store`) — for `payment` / `protected` requests only. The single-use `clientToken` mounts the Crossmint-hosted component; `sessionId` is what you submit. |
+| 3. Secure input | `GET /:id/input-requests/:requestId` | `200` — current request state; re-read it when a session expires and open a new one only while `status === "open"`. |
 | 4. Cancel | `POST /:id/cancel` | `202` — async; flips to `cancelled` on a later poll. |
 
 `GET /:id/messages/stream` delivers the same messages and run updates over SSE; this demo polls to keep the loop easy to read.
@@ -146,8 +148,9 @@ Open [http://localhost:3000](http://localhost:3000) (or whichever port Next pick
 ## Notes & known gaps
 
 - **Poll or stream, don't expect a push.** There are no webhooks; a ~1.5s poll on `GET /:id` + `GET /:id/messages` driving a state machine is the simplest pattern (`app/page.tsx`), and `GET /:id/messages/stream` is the SSE alternative.
-- **Forms are schema-driven.** `requiredAction.request.interaction.responseSchema` is arbitrary JSON Schema per input request — `components/action-form.tsx` renders it dynamically.
-- **Buyer profiles hold no payment.** They store name, contact, and shipping only — payment is still collected per checkout via an input request.
+- **Forms are schema-driven.** For `interaction.kind === "form"`, `responseSchema` is arbitrary JSON Schema per input request — `components/action-form.tsx` renders it dynamically.
+- **Sensitive values never travel through the messages API.** For a `payment` or `protected` request the app opens an ephemeral session (`createInputRequestSession` in `lib/agent-checkout-api.ts`), mounts the Crossmint-hosted secure component with the session's single-use `clientToken`, and submits only the opaque `sessionId` once the component reports the value was captured (`components/secure-input-card.tsx`). The `clientToken` is never logged or shown in the Code view. If the session expires before the buyer finishes, the app re-reads the request and opens a new session while it is still `open`. Never model a card number or password as a `form` field, and never paste one into a form prompt — the agent has no way to use it safely.
+- **Buyer profiles hold no payment.** They store name, contact, and shipping only — payment is still collected per checkout via a `payment` input request.
 - **Profile scopes are separate.** Creating/listing profiles needs the `agent-checkouts.buyer-profiles.*` and `agent-checkouts.browser-profiles.*` scopes on your `ck_` key, in addition to the checkout scopes. Without them step 1's profile calls return `403`.
 - **A browser profile is real account access.** It holds live merchant sessions, which is why the API exposes metadata only and why deleting erases the stored state rather than just the record.
 - **Production only — test tokens 401.** All credentials must be from the **live/production** environment. Mixing a **test** Stytch token with production Crossmint yields `401 ... Couldn't find a JWT signing key in the JWKS for kid jwk-test-... (ERROR_JWT_INVALID)`. Fix: swap in the `public-token-live-...` token from the Stytch project tied to your Crossmint production account and restart the dev server (`NEXT_PUBLIC_*` vars are inlined at build time).
