@@ -29,7 +29,12 @@ export type CheckoutStatus =
   | "failed"
   | "cancelled";
 
-export const TERMINAL_STATUSES: CheckoutStatus[] = ["succeeded", "blocked", "failed", "cancelled"];
+export const TERMINAL_STATUSES: CheckoutStatus[] = [
+  "succeeded",
+  "blocked",
+  "failed",
+  "cancelled",
+];
 
 export function isTerminal(status: CheckoutStatus): boolean {
   return TERMINAL_STATUSES.includes(status);
@@ -43,7 +48,11 @@ export function isTerminal(status: CheckoutStatus): boolean {
  * never travels through the messages API.
  */
 export type Interaction =
-  | { kind: "form"; responseSchema: JsonSchema; uiSchema: Record<string, unknown> }
+  | {
+      kind: "form";
+      responseSchema: JsonSchema;
+      uiSchema: Record<string, unknown>;
+    }
   | {
       kind: "payment";
       purpose: "checkout_payment";
@@ -160,11 +169,17 @@ export type UpdateBrowserProfileInput = { label: string };
  * GET /agent-checkouts/browser-profiles. Shaped like the other list endpoints,
  * but a user holds at most one profile today, so `nextCursor` is `null`.
  */
-export type BrowserProfilesResponse = { data: BrowserProfile[]; nextCursor: string | null };
+export type BrowserProfilesResponse = {
+  data: BrowserProfile[];
+  nextCursor: string | null;
+};
 
 /** What the agent bought, on a `succeeded` run. */
 export type Purchase =
-  | { kind: "receipt_captured"; receipt: { total: Money; merchantOrderId?: string } }
+  | {
+      kind: "receipt_captured";
+      receipt: { total: Money; merchantOrderId?: string };
+    }
   | { kind: "confirmed_without_receipt" };
 
 /** Why the agent stopped on purpose, on a `blocked` run. */
@@ -251,7 +266,11 @@ export type MessagePart =
       question: string;
       interaction: Interaction;
     }
-  | { type: "input_response"; requestId: string; action: "submit" | "alternative" | "decline" }
+  | {
+      type: "input_response";
+      requestId: string;
+      action: "submit" | "alternative" | "decline";
+    }
   | { type: "progress"; text: string }
   | ({ type: "result" } & CheckoutResult);
 
@@ -281,8 +300,30 @@ export type FormValues = Record<string, string | number | boolean | string[]>;
  */
 export type InputResponse =
   | { kind: "form"; values: FormValues }
-  | { kind: "payment"; orderIntentId: string }
-  | { kind: "protected"; protectedInputId: string };
+  | { kind: "payment"; sessionId: string }
+  | { kind: "protected"; sessionId: string };
+
+/**
+ * An ephemeral secure-collection session for one `payment` or `protected`
+ * input request (`POST /:id/input-requests/:requestId/sessions`). `clientToken`
+ * is a single-use, short-lived credential that only the Crossmint-hosted
+ * component may see: it is passed to the component and nowhere else. The
+ * `sessionId` is an opaque locator and is all that goes back on the messages API.
+ */
+export type SecureInputSession = {
+  sessionId: string;
+  clientToken: string;
+  expiresAt: string;
+};
+
+/** Current state of one input request (`GET /:id/input-requests/:requestId`). */
+export type InputRequestState = {
+  requestId: string;
+  status: "open" | "answered" | "closed" | "expired";
+  expiresAt: string;
+  question: string;
+  interaction: Interaction;
+};
 
 /** The single part of a buyer message sent with POST /:id/messages. */
 export type OutboundMessagePart =
@@ -293,7 +334,12 @@ export type OutboundMessagePart =
       action: "submit";
       response: InputResponse;
     }
-  | { type: "input_response"; requestId: string; action: "alternative"; text: string }
+  | {
+      type: "input_response";
+      requestId: string;
+      action: "alternative";
+      text: string;
+    }
   | { type: "input_response"; requestId: string; action: "decline" };
 
 /** Body for POST /:id/messages. `id` is client-generated so a retry is not applied twice. */
@@ -331,13 +377,17 @@ export function buildCreateCheckoutBody(input: CreateCheckoutInput) {
       ...(input.task ? { task: input.task } : {}),
     },
     // Only for unusual checkouts — steers the agent through non-standard flows.
-    ...(input.merchantGuidance ? { merchantGuidance: input.merchantGuidance } : {}),
+    ...(input.merchantGuidance
+      ? { merchantGuidance: input.merchantGuidance }
+      : {}),
     // Optional: attach a saved buyer profile by id so the agent reuses the
     // buyer's name/contact/shipping instead of asking for them.
     ...(input.buyerProfileId ? { buyerProfileId: input.buyerProfileId } : {}),
     // Optional: run inside the user's saved browser identity, so merchant
     // logins captured by earlier runs are already there.
-    ...(input.browserProfileId ? { browserProfileId: input.browserProfileId } : {}),
+    ...(input.browserProfileId
+      ? { browserProfileId: input.browserProfileId }
+      : {}),
     // constraints.maxCost is required by the API; the defaults are a fallback only.
     constraints: {
       maxCost: {
@@ -355,7 +405,9 @@ export function buildCreateCheckoutBody(input: CreateCheckoutInput) {
 export function buildCreateBuyerProfileBody(input: CreateBuyerProfileInput) {
   return {
     ...(input.label ? { label: input.label } : {}),
-    ...(input.name && (input.name.first || input.name.last) ? { name: input.name } : {}),
+    ...(input.name && (input.name.first || input.name.last)
+      ? { name: input.name }
+      : {}),
     ...(input.contact && (input.contact.email || input.contact.phone)
       ? { contact: input.contact }
       : {}),

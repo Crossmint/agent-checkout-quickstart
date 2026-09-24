@@ -2,10 +2,13 @@
 
 import { useCallback } from "react";
 import { Hand } from "lucide-react";
-import type { FormValues, InputResponse, RequiredAction } from "@/lib/agent-checkout-types";
+import type {
+  FormValues,
+  InputResponse,
+  RequiredAction,
+} from "@/lib/agent-checkout-types";
 import { JsonSchemaForm } from "@/components/json-schema-form";
-import { PaymentRequestCard } from "@/components/payment-request-card";
-import { ProtectedRequestCard } from "@/components/protected-request-card";
+import { SecureInputCard } from "@/components/secure-input-card";
 
 /**
  * Prompts the buyer for whatever the run's `requiredAction` needs, branching on
@@ -13,35 +16,40 @@ import { ProtectedRequestCard } from "@/components/protected-request-card";
  *
  * - `form`: fields are driven entirely by the request's `responseSchema` (never
  *   hardcode them) and rendered through {@link JsonSchemaForm}, an RJSF wrapper.
- * - `payment` / `protected`: the card or password is collected by a
- *   Crossmint-hosted component and only an opaque Crossmint ID is submitted.
- *   Sensitive values never pass through this app or the messages API, so a
- *   sensitive field must never be modelled as a `form` field.
+ * - `payment` / `protected`: a short-lived secure session is opened for the
+ *   request and its `clientToken` mounts a Crossmint-hosted component that
+ *   collects the card or password; only the session's opaque `sessionId` is
+ *   submitted. Sensitive values never pass through this app or the messages
+ *   API, so a sensitive field must never be modelled as a `form` field.
  */
 export function ActionForm({
   action,
   jwt,
+  runId,
   onSubmit,
   onDecline,
   submitting,
 }: {
   action: RequiredAction;
   jwt: string;
+  runId: string;
   onSubmit: (response: InputResponse) => void;
   onDecline: () => void;
   submitting: boolean;
 }) {
   const { interaction, expiresAt, question } = action.request;
-  const submitPayment = useCallback(
-    (orderIntentId: string) => onSubmit({ kind: "payment", orderIntentId }),
-    [onSubmit],
-  );
-  const submitProtected = useCallback(
-    (protectedInputId: string) => onSubmit({ kind: "protected", protectedInputId }),
-    [onSubmit],
+  const kind = interaction.kind;
+  const submitSession = useCallback(
+    (sessionId: string) => {
+      if (kind === "form") return;
+      onSubmit({ kind, sessionId });
+    },
+    [kind, onSubmit],
   );
 
-  const expiresLabel = expiresAt ? new Date(expiresAt).toLocaleTimeString() : null;
+  const expiresLabel = expiresAt
+    ? new Date(expiresAt).toLocaleTimeString()
+    : null;
   const header = (
     <div className="flex items-start gap-2.5">
       <span className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full bg-[#b45309]/15">
@@ -49,7 +57,11 @@ export function ActionForm({
       </span>
       <div>
         <p className="text-sm font-medium text-[#00150d]">{question}</p>
-        {expiresLabel && <p className="text-xs text-[#00150d]/45">Respond before {expiresLabel}</p>}
+        {expiresLabel && (
+          <p className="text-xs text-[#00150d]/45">
+            Respond before {expiresLabel}
+          </p>
+        )}
       </div>
     </div>
   );
@@ -61,29 +73,23 @@ export function ActionForm({
           schema={interaction.responseSchema ?? {}}
           submitLabel="Submit"
           isSubmitting={submitting}
-          onSubmit={(values) => onSubmit({ kind: "form", values: values as FormValues })}
+          onSubmit={(values) =>
+            onSubmit({ kind: "form", values: values as FormValues })
+          }
           secondary={{ label: "Decline", onClick: onDecline }}
           header={header}
         />
       ) : (
         <div className="space-y-4">
           {header}
-          {interaction.kind === "payment" ? (
-            <PaymentRequestCard
-              jwt={jwt}
-              interaction={interaction}
-              onAuthorized={submitPayment}
-              submitting={submitting}
-            />
-          ) : (
-            <ProtectedRequestCard
-              jwt={jwt}
-              interaction={interaction}
-              expiresAt={expiresAt}
-              onCreated={submitProtected}
-              submitting={submitting}
-            />
-          )}
+          <SecureInputCard
+            jwt={jwt}
+            runId={runId}
+            requestId={action.requestId}
+            interaction={interaction}
+            onSubmitted={submitSession}
+            submitting={submitting}
+          />
           <button
             type="button"
             onClick={onDecline}

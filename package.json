@@ -11,8 +11,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@crossmint/client-sdk-base": "3.0.0",
-    "@crossmint/client-sdk-react-ui": "4.6.1",
     "@crossmint/client-sdk-window": "1.1.1",
     "@rjsf/core": "6.5.2",
     "@rjsf/utils": "6.5.2",
