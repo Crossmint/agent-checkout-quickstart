@@ -18,7 +18,7 @@ const DOCS_URL = "https://docs.crossmint.com/agents/payment-flows/agent-checkout
  * The browser-profile half of step 1. Unlike buyer profiles this is not a
  * picker: a user holds at most one profile, so the card either offers to create
  * it or shows the one they have, with a toggle deciding whether this checkout
- * runs inside it (`browserProfileId`).
+ * runs inside it (`browser.profileId`).
  */
 export function BrowserProfileCard({
   getJwt,
@@ -136,7 +136,7 @@ export function BrowserProfileCard({
         <p className="mt-1 max-w-md text-sm text-[#00150d]/55">
           A browser profile is a saved browser identity. Sign in at the merchant once, inside the
           run, and later checkouts start already signed in — attached with{" "}
-          <code className="font-mono text-xs">browserProfileId</code>.
+          <code className="font-mono text-xs">browser.profileId</code>.
         </p>
       </div>
 

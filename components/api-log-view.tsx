@@ -7,6 +7,7 @@ import type { ApiCall } from "@/lib/agent-checkout-types";
 const METHOD_COLOR: Record<ApiCall["method"], string> = {
   POST: "#05B959",
   GET: "#2377FF",
+  PUT: "#7c3aed",
   PATCH: "#d97706",
   DELETE: "#dc2626",
 };

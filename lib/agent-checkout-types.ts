@@ -1,22 +1,193 @@
 // ─── Agent Checkouts API types ────────────────────────────────────────────
 // Mirrors the shape returned by ${CROSSMINT_BASE_URL}/api/unstable/agent-checkouts.
 
-/** A generic JSON Schema, as carried by an input request's responseSchema. */
-export type JsonSchema = {
-  type?: string;
-  title?: string;
-  description?: string;
-  enum?: (string | number)[];
-  // A single fixed value — used inside oneOf/anyOf branches to model an option.
-  const?: string | number;
-  // Options can also arrive as a list of branches (often {const, title}).
-  oneOf?: JsonSchema[];
-  anyOf?: JsonSchema[];
-  format?: string;
-  default?: unknown;
-  properties?: Record<string, JsonSchema>;
-  required?: string[];
-  items?: JsonSchema;
+import type { ProtectedInputField } from "@crossmint/client-sdk-react-ui";
+
+// ─── Input requests ─────────────────────────────────────────────────────────
+// While `status === "awaiting_input"`, the run carries a typed request. Its
+// `interaction.kind` picks the contract: a "form" lists typed field descriptors
+// (rendered with your own controls, or CrossmintProtectedInput when `handling`
+// is "protected"), a "payment" carries the charge metadata to authorize with an
+// order intent — never raw card details.
+
+export type TextInputAutoComplete =
+  | "on"
+  | "off"
+  | "name"
+  | "given-name"
+  | "family-name"
+  | "email"
+  | "username"
+  | "tel"
+  | "current-password"
+  | "new-password"
+  | "one-time-code"
+  | "street-address"
+  | "postal-code";
+
+export type TextInputMode =
+  | "none"
+  | "text"
+  | "decimal"
+  | "numeric"
+  | "tel"
+  | "search"
+  | "email"
+  | "url";
+
+export type TextInput = {
+  kind: "text";
+  multiline?: boolean;
+  placeholder?: string;
+  display?: "masked";
+  autoComplete?: TextInputAutoComplete;
+  inputMode?: TextInputMode;
+};
+
+export type BooleanInput = { kind: "boolean" };
+
+export type NumberInput = { kind: "number" | "integer" };
+
+export type ChoiceOption = {
+  value: string;
+  label: string;
+  // Placeholder options are a prompt ("Choose…"), never a valid answer.
+  placeholder: boolean;
+  selected: boolean;
+  disabled: boolean;
+};
+
+export type ChoiceInput = {
+  kind: "choice";
+  selection:
+    | { kind: "one" }
+    | { kind: "many"; min: number; max?: number };
+  options: ChoiceOption[];
+};
+
+/** A field rendered with the app's own controls; its answer is a plain value. */
+export type StandardField = {
+  key: string;
+  label: string;
+  required: boolean;
+  handling: "standard";
+  input: TextInput | BooleanInput | NumberInput | ChoiceInput;
+};
+
+/**
+ * A field collected by Crossmint's `CrossmintProtectedInput`; its answer is a
+ * `{ protectedInputId }` reference — the raw value never reaches this app.
+ */
+export type ProtectedField = ProtectedInputField;
+
+export type BuyerInputField = StandardField | ProtectedField;
+
+export type FormInteraction = {
+  kind: "form";
+  fields: BuyerInputField[];
+};
+
+export type PaymentInteraction = {
+  kind: "payment";
+  purpose: "checkout_payment";
+  method: "card";
+  amount: { kind: "exact" | "maximum"; value: string; currency: string };
+  merchant: { url: string; name: string; countryCode: string };
+};
+
+export type Interaction = FormInteraction | PaymentInteraction;
+
+// ─── Order intents ──────────────────────────────────────────────────────────
+// Mirrors the SDK's base types (@crossmint/client-sdk-base) for the card
+// rails an order intent exposes. The react-ui package does not re-export them,
+// so the app keeps a local copy; `OrderIntentVerification` accepts the
+// `verificationConfig` variant.
+
+export type OrderIntentStatus = "active" | "cancelled" | "expired";
+export type OrderIntentProvider = "vic" | "agentpay";
+export type OrderIntentCredentialFormat = "card" | "network-token";
+
+type OrderIntentRailState =
+  | { status: "active" | "pending_verification"; error?: never }
+  | { status: "error"; error: { code: string } };
+
+export type OrderIntentAgenticTokenRail = OrderIntentRailState & {
+  rail: "agentic-token";
+  provider: OrderIntentProvider;
+  credentialFormats: OrderIntentCredentialFormat[];
+};
+
+export type OrderIntentEncryptedCardRail = (
+  | { status: "active" | "pending_cvc_recollection"; error?: never }
+  | { status: "error"; error: { code: string } }
+) & {
+  rail: "encrypted-card";
+  credentialFormats: "card"[];
+};
+
+export type OrderIntentSptRail = OrderIntentRailState & {
+  rail: "spt";
+  provider: "stripe";
+  credentialFormats: "identifier"[];
+};
+
+export type OrderIntentRail =
+  | OrderIntentAgenticTokenRail
+  | OrderIntentEncryptedCardRail
+  | OrderIntentSptRail;
+
+export type OrderIntentVerificationConfig = {
+  environment: "production" | "test";
+  publicApiKey: string;
+  allowanceId: string;
+};
+
+export type OrderIntentMerchant = {
+  name: string;
+  url: string;
+  countryCode: string;
+  categoryCode?: string;
+  acquirerBin?: string;
+};
+
+type OrderIntentBase = {
+  orderIntentId: string;
+  paymentMethodId: string;
+  status: OrderIntentStatus;
+  amount: { total: string; spent: string; reserved: string; available: string; currency: string };
+  merchant?: OrderIntentMerchant;
+  description: string;
+  rails: OrderIntentRail[];
+  expiresAt: string;
+};
+
+export type OrderIntentWithVerification = OrderIntentBase & {
+  verificationConfig: OrderIntentVerificationConfig;
+};
+
+export type OrderIntent =
+  | OrderIntentWithVerification
+  | (OrderIntentBase & { verificationConfig?: never });
+
+/** Registration state for one provisioned card rail. */
+export type RegistrationRail = {
+  rail: "agentic-token" | "spt";
+  provider?: OrderIntentProvider | "stripe";
+  status: "enabled" | "pending" | "error";
+  error?: { code: string } | null;
+};
+
+export type CardRegistration = {
+  paymentMethodId: string;
+  rails: RegistrationRail[];
+};
+
+export type CreateOrderIntentInput = {
+  paymentMethodId: string;
+  amount: { value: string; currency: string };
+  merchant?: OrderIntentMerchant;
+  description: string;
+  expiresAt: string;
 };
 
 /** status walks: queued → running → awaiting_input → succeeded | blocked | failed | cancelled */
@@ -47,11 +218,7 @@ export type RequiredAction = {
   request: {
     expiresAt: string;
     question: string;
-    interaction: {
-      kind: "form";
-      responseSchema: JsonSchema;
-      uiSchema: Record<string, unknown>;
-    };
+    interaction: Interaction;
   };
 };
 
@@ -123,7 +290,7 @@ export type BuyerProfilesPage = {
 // A browser profile is a durable browser identity for the signed-in user: the
 // merchant logins it accumulates are reused across runs, so the user signs in
 // once instead of on every checkout. Attach it by passing its id as
-// `browserProfileId`. The API exposes metadata only — the saved browser state
+// `browser.profileId`. The API exposes metadata only — the saved browser state
 // itself never comes back through it.
 
 /** The read model returned by every browser-profile endpoint. */
@@ -173,6 +340,7 @@ export type FailureReason =
   | "model_error"
   | "runtime_error"
   | "browser_session_lost"
+  | "browser_location_unsupported"
   | "input_expired";
 
 /** The terminal outcome carried on the run and in the last `result` message. */
@@ -194,7 +362,10 @@ export type CheckoutInput = {
   request: { startUrl: string; task?: string };
   constraints: { maxCost: Money };
   buyerProfileId?: string;
-  browserProfileId?: string;
+  browser?: {
+    profileId?: string;
+    location?: { type: "country"; countryCode: string };
+  };
   merchantGuidance?: string;
 };
 
@@ -234,9 +405,31 @@ export type MessagePart =
       status: "open" | "closed";
       expiresAt: string;
       question: string;
-      interaction: { kind: "form"; responseSchema: JsonSchema; uiSchema: Record<string, unknown> };
+      interaction: Interaction;
     }
-  | { type: "input_response"; requestId: string; action: "submit" | "alternative" | "decline" }
+  | {
+      type: "input_response";
+      requestId: string;
+      action: "submit";
+      // The read model echoes the projected application outcome, not the
+      // submitted answers.
+      response:
+        | {
+            kind: "form";
+            fields: {
+              key: string;
+              label: string;
+              answer: "provided" | "omitted";
+              application: "already_satisfied" | "not_attempted" | "unresolved" | "verified";
+            }[];
+          }
+        | {
+            kind: "payment";
+            application: "already_satisfied" | "not_attempted" | "unresolved" | "verified";
+          };
+    }
+  | { type: "input_response"; requestId: string; action: "alternative"; text: string }
+  | { type: "input_response"; requestId: string; action: "decline" }
   | { type: "progress"; text: string }
   | ({ type: "result" } & CheckoutResult);
 
@@ -255,8 +448,14 @@ export type CheckoutMessagesPage = {
   streamCursor: string;
 };
 
-/** A form answer to an input request: field name → value. */
-export type FormValues = Record<string, string | number | boolean | string[]>;
+/**
+ * One form answer: a plain value for a standard field, or a
+ * `{ protectedInputId }` reference for a protected one.
+ */
+export type FormAnswerValue = string | number | boolean | string[] | { protectedInputId: string };
+
+/** The form answers to an input request: field key → answer. */
+export type FormAnswers = Record<string, FormAnswerValue>;
 
 /** The single part of a buyer message sent with POST /:id/messages. */
 export type OutboundMessagePart =
@@ -265,7 +464,13 @@ export type OutboundMessagePart =
       type: "input_response";
       requestId: string;
       action: "submit";
-      response: { kind: "form"; values: FormValues };
+      response: { kind: "form"; answers: FormAnswers };
+    }
+  | {
+      type: "input_response";
+      requestId: string;
+      action: "submit";
+      response: { kind: "payment"; orderIntentId: string };
     }
   | { type: "input_response"; requestId: string; action: "alternative"; text: string }
   | { type: "input_response"; requestId: string; action: "decline" };
@@ -291,6 +496,7 @@ export type CreateCheckoutInput = {
   // Optional saved buyer profile whose name/contact/shipping the agent should use.
   buyerProfileId?: string;
   // Optional browser profile whose saved merchant logins the run should reuse.
+  // Sent on the wire as `browser.profileId`.
   browserProfileId?: string;
 };
 
@@ -310,8 +516,9 @@ export function buildCreateCheckoutBody(input: CreateCheckoutInput) {
     // buyer's name/contact/shipping instead of asking for them.
     ...(input.buyerProfileId ? { buyerProfileId: input.buyerProfileId } : {}),
     // Optional: run inside the user's saved browser identity, so merchant
-    // logins captured by earlier runs are already there.
-    ...(input.browserProfileId ? { browserProfileId: input.browserProfileId } : {}),
+    // logins captured by earlier runs are already there. Lives under `browser`
+    // alongside the (unused here) `browser.location` egress-country option.
+    ...(input.browserProfileId ? { browser: { profileId: input.browserProfileId } } : {}),
     // constraints.maxCost is required by the API; the defaults are a fallback only.
     constraints: {
       maxCost: {
@@ -339,7 +546,7 @@ export function buildCreateBuyerProfileBody(input: CreateBuyerProfileInput) {
 
 /** One entry in the client-side API-call log rendered by the "Code" view. */
 export type ApiCall = {
-  method: "POST" | "GET" | "PATCH" | "DELETE";
+  method: "POST" | "GET" | "PUT" | "PATCH" | "DELETE";
   path: string;
   requestBody?: unknown;
   response?: unknown;

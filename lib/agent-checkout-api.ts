@@ -12,7 +12,18 @@
 //   2. getCheckout       GET    /:id                 → 200  poll every ~1-2s (no webhooks)
 //      listMessages      GET    /:id/messages        → 200  what the agent did, asked, and concluded
 //   3. sendMessage       POST   /:id/messages        → 202  answer an input request (status === "awaiting_input")
+//        submitForm      — response { kind: "form", answers } for a "form" interaction
+//        submitPayment   — response { kind: "payment", orderIntentId } for a "payment" interaction
+//        sendAlternative — action "alternative" + free text (steer the agent elsewhere)
+//        declineInput    — action "decline" (refuse the request)
 //   4. cancelCheckout    POST   /:id/cancel          → 202  cancel any time
+//
+// Card authorization for a "payment" interaction (same key + JWT, but at
+// ${BASE_URL}/api/unstable, not under /agent-checkouts):
+//   registerCard        PUT  /payment-methods/:id/order-intent-registration  (idempotent)
+//   getCardRegistration GET  /payment-methods/:id/order-intent-registration  (404 → null)
+//   createOrderIntent   POST /order-intents
+//   getOrderIntent      GET  /order-intents/:id
 
 import {
   buildCreateCheckoutBody,
@@ -25,11 +36,14 @@ import {
   type CheckoutMessage,
   type CheckoutMessagesPage,
   type CheckoutView,
+  type CardRegistration,
   type CreateBrowserProfileInput,
   type CreateBuyerProfileInput,
   type CreateCheckoutInput,
-  type FormValues,
+  type CreateOrderIntentInput,
+  type FormAnswers,
   type MessageAck,
+  type OrderIntent,
   type OutboundMessage,
   type OutboundMessagePart,
   type UpdateBrowserProfileInput,
@@ -177,14 +191,40 @@ export async function sendMessage(
   return { body, ack };
 }
 
-/** Answer an input request with form values that satisfy its `responseSchema`. */
-export function submitInput(jwt: string, runId: string, requestId: string, values: FormValues) {
+/**
+ * Answer a "form" input request. `answers` is keyed by field key: plain values
+ * for standard fields, `{ protectedInputId }` references for protected ones.
+ * Omit optional fields the buyer left unanswered — null is not an answer.
+ */
+export function submitForm(jwt: string, runId: string, requestId: string, answers: FormAnswers) {
   return sendMessage(jwt, runId, {
     type: "input_response",
     requestId,
     action: "submit",
-    response: { kind: "form", values },
+    response: { kind: "form", answers },
   });
+}
+
+/**
+ * Answer a "payment" input request with an order intent created for the
+ * request's amount and merchant. Never contains card details — the checkout
+ * mints the credential from the order intent's rail inside the vault.
+ */
+export function submitPayment(jwt: string, runId: string, requestId: string, orderIntentId: string) {
+  return sendMessage(jwt, runId, {
+    type: "input_response",
+    requestId,
+    action: "submit",
+    response: { kind: "payment", orderIntentId },
+  });
+}
+
+/**
+ * Steer the agent to another path instead of giving the requested answer
+ * (e.g. "Pay with Shop Pay instead").
+ */
+export function sendAlternative(jwt: string, runId: string, requestId: string, text: string) {
+  return sendMessage(jwt, runId, { type: "input_response", requestId, action: "alternative", text });
 }
 
 /** Refuse an input request. The agent decides how to proceed (often by stopping). */
@@ -333,7 +373,7 @@ export async function deleteBuyerProfile(jwt: string, id: string): Promise<void>
 //
 // A browser profile is a durable browser identity for the signed-in user: the
 // merchant logins captured by one run are already signed in on the next.
-// Attach it to a checkout by passing its id as `browserProfileId`. Every
+// Attach it to a checkout by passing its id as `browser.profileId`. Every
 // endpoint returns metadata only — the saved browser state itself is held by
 // Crossmint's browser infrastructure and never comes back over the API.
 //
@@ -428,4 +468,90 @@ export async function deleteBrowserProfile(jwt: string, id: string): Promise<voi
   });
   if (!res.ok) throw new Error(`Failed to delete browser profile (${res.status}): ${await readError(res)}`);
   log("DELETE /agent-checkouts/browser-profiles/:id → accepted", { id, status: res.status });
+}
+
+// ─── Card order intents ─────────────────────────────────────────────────────
+//
+// When the run's input request is a "payment" interaction, the app authorizes
+// the buyer's saved card with an order intent for exactly the request's
+// `amount` and `merchant`, then submits the `orderIntentId`. These endpoints
+// sit next to agent-checkouts under /api/unstable and take the same ck_ key +
+// Bearer JWT. Raw card data never appears here — these calls carry ids only.
+//
+// Each function returns { body, response } so the caller can append the pair
+// to the "Code" API log like the checkout calls.
+
+const UNSTABLE_BASE = `${BASE_URL}/api/unstable`;
+
+/**
+ * Register a saved card for order intents (idempotent). Provisions the
+ * card-network rails the card supports; does not prompt for verification and
+ * grants no spending permission by itself.
+ */
+export async function registerCard(
+  jwt: string,
+  paymentMethodId: string,
+  input: { email: string; countryCode: string; languageCode: string },
+): Promise<{ body: typeof input; response: CardRegistration }> {
+  const path = `/payment-methods/${paymentMethodId}/order-intent-registration`;
+  log(`PUT ${path} → request body`, input);
+  const res = await fetch(`${UNSTABLE_BASE}${path}`, {
+    method: "PUT",
+    headers: authHeaders(jwt),
+    body: JSON.stringify(input),
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`Failed to register card (${res.status}): ${await readError(res)}`);
+  const data: CardRegistration = await res.json();
+  log(`PUT ${path} → response`, data);
+  return { body: input, response: data };
+}
+
+/** The card's registration, or null when it hasn't been registered yet (404). */
+export async function getCardRegistration(
+  jwt: string,
+  paymentMethodId: string,
+): Promise<CardRegistration | null> {
+  const res = await fetch(
+    `${UNSTABLE_BASE}/payment-methods/${paymentMethodId}/order-intent-registration`,
+    { headers: authHeaders(jwt), cache: "no-store" },
+  );
+  if (res.status === 404) return null;
+  if (!res.ok)
+    throw new Error(`Failed to read card registration (${res.status}): ${await readError(res)}`);
+  return (await res.json()) as CardRegistration;
+}
+
+/**
+ * Create an order intent: a bounded allowance on the saved card for one
+ * merchant. The response lists each rail and its status — a rail that is
+ * `pending_verification` needs `OrderIntentVerification`, and `encrypted-card`
+ * can need `CrossmintCvcRecollection`, before the intent can back a payment.
+ */
+export async function createOrderIntent(
+  jwt: string,
+  input: CreateOrderIntentInput,
+): Promise<{ body: CreateOrderIntentInput; response: OrderIntent }> {
+  log("POST /order-intents → request body", input);
+  const res = await fetch(`${UNSTABLE_BASE}/order-intents`, {
+    method: "POST",
+    headers: authHeaders(jwt),
+    body: JSON.stringify(input),
+    cache: "no-store",
+  });
+  if (!res.ok) throw new Error(`Failed to create order intent (${res.status}): ${await readError(res)}`);
+  const data: OrderIntent = await res.json();
+  log("POST /order-intents → response", data);
+  return { body: input, response: data };
+}
+
+/** Re-read an order intent — rail statuses move after verification/CVC recollection. */
+export async function getOrderIntent(jwt: string, orderIntentId: string): Promise<OrderIntent> {
+  const res = await fetch(`${UNSTABLE_BASE}/order-intents/${orderIntentId}`, {
+    headers: authHeaders(jwt),
+    cache: "no-store",
+  });
+  if (!res.ok)
+    throw new Error(`Failed to fetch order intent (${res.status}): ${await readError(res)}`);
+  return (await res.json()) as OrderIntent;
 }

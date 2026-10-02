@@ -4,9 +4,9 @@ import { useState } from "react";
 import { ArrowLeft, ChevronDown, Loader2, ShoppingBag } from "lucide-react";
 
 // The example prompt — one instruction per line so it reads as a structured
-// list. Payment *method* can be set here (e.g. "pay by card"), but the card
-// details themselves aren't accepted in the request yet: the agent prompts for
-// them during checkout (step 3).
+// list. Payment *method* can be set here (e.g. "pay by card"), but never card
+// details: when the agent is ready to pay it sends a typed payment request,
+// which this app authorizes with an order intent on the buyer's saved card.
 const EXAMPLE_REQUEST = [
   "buy size M",
   "pay by card",
