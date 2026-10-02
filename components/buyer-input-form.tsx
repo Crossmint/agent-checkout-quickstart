@@ -355,9 +355,9 @@ function StandardFieldRow({
                   type="checkbox"
                   className="mt-0.5 size-4 accent-[#05B959]"
                   checked={picked.includes(o.value)}
-                  // Disabled options can't be newly picked, but a selected one is
-                  // kept — the answer preserves it (see the checked flag above).
-                  disabled={disabled || (o.disabled && !picked.includes(o.value))}
+                  // Disabled options can't be toggled: unselected ones can't be
+                  // picked, and preselected (locked) ones stay in the answer.
+                  disabled={disabled || o.disabled}
                   onChange={(e) =>
                     update(
                       field.key,
