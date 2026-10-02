@@ -19,22 +19,23 @@ Hand an agent a product URL and an instruction and let it check out for you. Thi
 The app walks you through **three steps**:
 
 1. **Profiles** — pick (or create) a **buyer profile**: a reusable set of buyer details (name, contact, shipping) the agent uses so it doesn't have to ask. Optionally create a **browser profile** too, so merchant logins survive from one checkout to the next.
-2. **What to buy** — paste a product URL and write a buyer request. The more you specify up front (size, payment method, delivery option, billing address), the fewer questions the agent stops to ask. You set the payment _method_ here (e.g. "pay by card"), but not the card details — the agent asks for those during checkout.
-3. **Checkout** — watch the live browser session with the instruction and an elapsed timer, enter card details when the agent prompts for them (a warning explains what's safe to paste), answer any other prompts, and cancel any time.
+2. **What to buy** — paste a product URL and write a buyer request. The more you specify up front (size, payment method, delivery option, billing address), the fewer questions the agent stops to ask. You set the payment _method_ here (e.g. "pay by card"), but never card details — when the agent is ready to pay it sends a typed payment request, which you authorize with a saved card.
+3. **Checkout** — watch the live browser session with the instruction and an elapsed timer, answer the agent's typed input requests (forms and payment authorizations), and cancel any time.
 
 **Learn how to:**
 - Create a checkout from a product URL + a natural-language instruction, attaching a saved buyer profile by `buyerProfileId`
 - Poll the checkout through its lifecycle: `queued → running → awaiting_input → succeeded | blocked | failed | cancelled`
 - Embed the live browser session the agent is driving
 - Read the run's messages to show what the agent is doing
-- Render a form dynamically from each input request's JSON Schema — never hardcoding fields
+- Render each input request's typed `interaction.fields` — standard fields with plain controls, protected fields (passwords, codes) collected by `CrossmintProtectedInput` so the app only ever sees a `{ protectedInputId }` reference
+- Authorize a card payment by creating an **order intent** for the request's exact amount and merchant on the buyer's saved card — completing rail verification or CVC recollection when needed — then submitting the `orderIntentId`
 - Answer or decline input requests, and read the final purchase, blocked code, or failure reason
 - Save reusable **buyer profiles** (name, contact, shipping) and attach one to a checkout with `buyerProfileId`
-- Reuse a merchant login across runs with a **browser profile**, attached with `browserProfileId`
+- Reuse a merchant login across runs with a **browser profile**, attached as `browser.profileId`
 
 ## How it works
 
-The app calls five endpoints under `${NEXT_PUBLIC_CROSSMINT_BASE_URL}/api/unstable/agent-checkouts` (`lib/agent-checkout-api.ts`):
+The app calls five endpoints under `${NEXT_PUBLIC_CROSSMINT_BASE_URL}/api/unstable/agent-checkouts` (`lib/agent-checkout-api.ts`), plus the card-authorization endpoints under `/api/unstable` for payment requests:
 
 | Step | Call | Result |
 | --- | --- | --- |
@@ -43,10 +44,15 @@ The app calls five endpoints under `${NEXT_PUBLIC_CROSSMINT_BASE_URL}/api/unstab
 | 2. Poll | `GET /:id/messages` | `200` — `{ data, nextCursor, streamCursor }`; what the agent did, asked, and concluded. |
 | 3. Respond | `POST /:id/messages` | `202` — an `input_response` part for `requiredAction.requestId`, when `status === "awaiting_input"`. |
 | 4. Cancel | `POST /:id/cancel` | `202` — async; flips to `cancelled` on a later poll. |
+| Payment | `PUT /payment-methods/:id/order-intent-registration` | `200` — provisions the card's agentic rails (idempotent; also `GET`able). |
+| Payment | `POST /order-intents` | `200` — an order intent for the request's amount + merchant on the saved card. |
+| Payment | `GET /order-intents/:id` | `200` — re-read rail statuses after verification or CVC recollection. |
 
 `GET /:id/messages/stream` delivers the same messages and run updates over SSE; this demo polls to keep the loop easy to read.
 
-Terminal runs carry a `result`: `succeeded` has a `purchase` (`receipt_captured` with a total and optional `merchantOrderId`, or `confirmed_without_receipt`); `blocked` has a `code` such as `policy.max_cost_exceeded`, `product.item_unavailable`, or `merchant.payment_declined`; `cancelled` has a `summary`. A `failed` run carries a top-level `reason` (`input_expired`, `browser_session_lost`, `runtime_error`, …) instead.
+Terminal runs carry a `result`: `succeeded` has a `purchase` (`receipt_captured` with a total and optional `merchantOrderId`, or `confirmed_without_receipt`); `blocked` has a `code` such as `policy.max_cost_exceeded`, `product.item_unavailable`, or `merchant.payment_declined`; `cancelled` has a `summary`. A `failed` run carries a top-level `reason`: `input_expired`, `browser_session_lost`, `browser_location_unsupported`, `model_error`, `runtime_error`, `reconciliation_required`, `cost_limit`, `accounting_unavailable`, or `cancelled`.
+
+An open input request is typed by `interaction.kind`. A `"form"` interaction lists `fields`: standard fields (text, multiline, boolean, number/integer, choice) rendered with plain controls, and protected fields collected by `CrossmintProtectedInput` — the answer is `{ protectedInputId }`, never the raw value. Answers go back in one `response: { kind: "form", answers }` keyed by field key. A `"payment"` interaction carries the charge's `amount` and `merchant`; the app registers the buyer's saved card, creates an order intent for it (verifying a `pending_verification` agentic-token rail or recollecting a stale CVC when required), and submits `response: { kind: "payment", orderIntentId }`. Raw card data never touches the app or the checkout.
 
 `constraints.maxCost` is required by the API, but this demo doesn't ask for a budget — it sends a deliberately huge cap (`HIGH_MAX_COST` in `app/page.tsx`) so the agent is never blocked on cost. Add a real cost input if you want to enforce a budget.
 
@@ -80,7 +86,7 @@ Profile endpoints live under `…/agent-checkouts/browser-profiles` (`lib/agent-
 | `PATCH /browser-profiles/:id` | `200` — renames it; `label` is the only editable field. |
 | `DELETE /browser-profiles/:id` | `204` — erases the saved browser state, not just the record. |
 
-Pass a profile's id as `browserProfileId` on `POST /agent-checkouts` to run inside it. A new profile is empty, so the first checkout still asks the user to sign in — they do it in the embedded browser — and later ones skip it.
+Pass a profile's id as `browser.profileId` on `POST /agent-checkouts` to run inside it (the `browser` block also carries the optional `browser.location` egress country). A new profile is empty, so the first checkout still asks the user to sign in — they do it in the embedded browser — and later ones skip it.
 
 Every response is **metadata only**: an id, your label, and timestamps (`updatedAt` tracks label edits, not runs). The saved browser state is held by Crossmint's browser infrastructure as an opaque blob, never read by Crossmint and never included in a model prompt, and no cookie or token comes back over the API. Deleting is irreversible: it erases the state itself, and runs already using the profile finish before erasure completes.
 
@@ -115,6 +121,8 @@ NEXT_PUBLIC_STYTCH_PUBLIC_TOKEN=public-token-live-...
 # Crossmint CLIENT production key with scopes: agent-checkouts.create | read | update | cancel.
 # For buyer profiles (step 1), also add: agent-checkouts.buyer-profiles.create | read | update | delete.
 # For browser profiles (step 1), also add: agent-checkouts.browser-profiles.create | read | update | delete.
+# For card payment requests (step 3), also add: payment-methods.create | read | update,
+# order-intents.create | read, and protected-inputs.create (for protected form fields).
 # Public by design — restrict it with allowed-origins in the Crossmint console.
 NEXT_PUBLIC_CROSSMINT_API_KEY=ck_production_...
 
@@ -146,8 +154,8 @@ Open [http://localhost:3000](http://localhost:3000) (or whichever port Next pick
 ## Notes & known gaps
 
 - **Poll or stream, don't expect a push.** There are no webhooks; a ~1.5s poll on `GET /:id` + `GET /:id/messages` driving a state machine is the simplest pattern (`app/page.tsx`), and `GET /:id/messages/stream` is the SSE alternative.
-- **Forms are schema-driven.** `requiredAction.request.interaction.responseSchema` is arbitrary JSON Schema per input request — `components/action-form.tsx` renders it dynamically.
-- **Buyer profiles hold no payment.** They store name, contact, and shipping only — payment is still collected per checkout via an input request.
+- **Forms are typed, not schema-driven.** `requiredAction.request.interaction.fields` lists typed field descriptors — `components/buyer-input-form.tsx` renders standard fields and `CrossmintProtectedInput` collects protected ones; submit them together as `response.answers`.
+- **Buyer profiles hold no payment.** They store name, contact, and shipping only. Payment is authorized per checkout: a `payment` interaction is answered with an `orderIntentId` created on the buyer's saved card via `components/payment-request.tsx` — card numbers stay inside Crossmint's vault end to end.
 - **Profile scopes are separate.** Creating/listing profiles needs the `agent-checkouts.buyer-profiles.*` and `agent-checkouts.browser-profiles.*` scopes on your `ck_` key, in addition to the checkout scopes. Without them step 1's profile calls return `403`.
 - **A browser profile is real account access.** It holds live merchant sessions, which is why the API exposes metadata only and why deleting erases the stored state rather than just the record.
 - **Production only — test tokens 401.** All credentials must be from the **live/production** environment. Mixing a **test** Stytch token with production Crossmint yields `401 ... Couldn't find a JWT signing key in the JWKS for kid jwk-test-... (ERROR_JWT_INVALID)`. Fix: swap in the `public-token-live-...` token from the Stytch project tied to your Crossmint production account and restart the dev server (`NEXT_PUBLIC_*` vars are inlined at build time).

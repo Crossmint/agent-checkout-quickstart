@@ -29,11 +29,11 @@ function partLabel(part: MessagePart): string | null {
     case "input_request":
       return part.question;
     case "input_response":
-      return part.action === "submit"
-        ? "You answered the agent's question"
-        : part.action === "decline"
-          ? "You declined the agent's request"
-          : "You suggested an alternative";
+      if (part.action === "decline") return "You declined the agent's request";
+      if (part.action === "alternative") return "You suggested an alternative";
+      return part.response.kind === "payment"
+        ? "You authorized the payment"
+        : "You answered the agent's question";
     case "result":
       return part.summary;
   }

@@ -73,6 +73,7 @@ const FAILURE_COPY: Record<FailureReason, string> = {
   model_error: "The agent's model returned an error.",
   runtime_error: "Something went wrong while running the agent.",
   browser_session_lost: "The browser session was lost.",
+  browser_location_unsupported: "The browser couldn't run from the requested country.",
   input_expired: "A requested input expired before it was answered.",
 };
 

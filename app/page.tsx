@@ -7,7 +7,9 @@ import {
   createCheckout,
   getCheckout,
   listAllMessages,
-  submitInput,
+  submitForm,
+  submitPayment,
+  sendAlternative,
   declineInput,
   cancelCheckout,
   resolveEmbedUrl,
@@ -24,7 +26,7 @@ import {
   type CheckoutMessage,
   type CheckoutView,
   type CreateCheckoutInput,
-  type FormValues,
+  type FormAnswers,
 } from "@/lib/agent-checkout-types";
 import { CheckoutForm } from "@/components/checkout-form";
 import { StatusBadge } from "@/components/status-badge";
@@ -257,14 +259,16 @@ function CheckoutApp() {
     [handleCreate, effectiveSelectedId, attachBrowserProfile, browserProfile],
   );
 
-  const handleSubmitAction = useCallback(
-    async (values: FormValues) => {
+  // Sends one input_response message part for the current request, then
+  // refreshes so the UI tracks the run resuming.
+  const respond = useCallback(
+    async (send: () => Promise<{ body: unknown; ack: unknown }>) => {
       if (!checkout?.requiredAction) return;
       const { requestId } = checkout.requiredAction;
       setActionBusy(true);
       setError(null);
       try {
-        const { body, ack } = await submitInput(getJwt(), checkout.runId, requestId, values);
+        const { body, ack } = await send();
         logCall({
           method: "POST",
           path: `${BASE_PATH}/${checkout.runId}/messages`,
@@ -274,13 +278,37 @@ function CheckoutApp() {
         setRespondedRequestId(requestId);
         await refresh(checkout.runId);
       } catch (err) {
-        console.error("Submit input failed:", err);
+        console.error("Respond failed:", err);
         setError(err instanceof Error ? err.message : "Failed to submit your answer");
       } finally {
         setActionBusy(false);
       }
     },
-    [checkout, logCall, getJwt, refresh],
+    [checkout, logCall, refresh],
+  );
+
+  const handleSubmitForm = useCallback(
+    (answers: FormAnswers) =>
+      respond(() =>
+        submitForm(getJwt(), checkout!.runId, checkout!.requiredAction!.requestId, answers),
+      ),
+    [respond, getJwt, checkout],
+  );
+
+  const handleSubmitPayment = useCallback(
+    (orderIntentId: string) =>
+      respond(() =>
+        submitPayment(getJwt(), checkout!.runId, checkout!.requiredAction!.requestId, orderIntentId),
+      ),
+    [respond, getJwt, checkout],
+  );
+
+  const handleAlternative = useCallback(
+    (text: string) =>
+      respond(() =>
+        sendAlternative(getJwt(), checkout!.runId, checkout!.requiredAction!.requestId, text),
+      ),
+    [respond, getJwt, checkout],
   );
 
   const handleDeclineAction = useCallback(async () => {
@@ -561,10 +589,17 @@ function CheckoutApp() {
                   <div className="animate-fade-in absolute inset-0 z-20 flex items-center justify-center rounded-[10px] bg-black/40 p-4 backdrop-blur-[2px]">
                     <div className="animate-fade-in-scale w-full max-w-[440px]">
                       <ActionForm
+                        key={pending!.requestId}
                         action={pending!}
-                        onSubmit={handleSubmitAction}
+                        jwt={getJwt()}
+                        email={userEmail}
+                        countryCode={selectedProfile?.shipping.countryCode ?? "US"}
+                        onSubmit={handleSubmitForm}
+                        onSubmitPayment={handleSubmitPayment}
+                        onAlternative={handleAlternative}
                         onDecline={handleDeclineAction}
                         submitting={actionBusy}
+                        logCall={logCall}
                       />
                     </div>
                   </div>

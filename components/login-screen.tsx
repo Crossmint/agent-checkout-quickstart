@@ -39,7 +39,9 @@ export function useStytchTokenAuth() {
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get("stytch_token_type") === "oauth") {
-      setToken(params.get("token"));
+      // Deferred one microtask so the state change isn't synchronous inside
+      // the effect body (react-hooks/set-state-in-effect).
+      queueMicrotask(() => setToken(params.get("token")));
     }
   }, []);
 

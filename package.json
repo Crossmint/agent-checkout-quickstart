@@ -11,9 +11,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@rjsf/core": "6.5.2",
-    "@rjsf/utils": "6.5.2",
-    "@rjsf/validator-ajv8": "6.5.2",
+    "@crossmint/client-sdk-react-ui": "4.9.0",
     "@stytch/nextjs": "^22.0.9",
     "lucide-react": "^1.8.0",
     "next": "16.2.8",
