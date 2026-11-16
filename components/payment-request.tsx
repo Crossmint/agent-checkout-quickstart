@@ -177,7 +177,7 @@ export function PaymentRequest({
       const { body, response } = await registerCard(jwt, paymentMethodId, {
         email,
         countryCode,
-        languageCode: "en",
+        languageCode: "en-US",
       });
       logCall({
         method: "PUT",
